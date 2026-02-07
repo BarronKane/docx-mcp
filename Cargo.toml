@@ -14,9 +14,10 @@ license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
-rmcp = { workspace = true, features = ["server", "transport-io", "macros"]}
+rmcp = { version = "0.14.0", features = ["server", "transport-io", "macros"]}
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = {  version = "1.0.149" }
 surrealdb = { version = "2.6.0", features = ["default"] }
 uuid = { version = "1.20", features = ["v4", "serde"] }
 toml = "0.9.11+spec-1.1.0"

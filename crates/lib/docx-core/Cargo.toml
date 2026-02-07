@@ -8,6 +8,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+docx-store = { path = "../docx-store" }
+roxmltree = "0.20"
+serde.workspace = true
+surrealdb.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
