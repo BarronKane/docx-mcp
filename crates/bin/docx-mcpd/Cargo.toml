@@ -1,0 +1,18 @@
+[package]
+name = "docx-mcpd"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+
+docx-core = { path = "../../lib/docx-core" }
+docx-store = { path = "../../lib/docx-store" }
+docx-mcp = { path = "../../lib/docx-mcp" }
+
+[lints]
+workspace = true
