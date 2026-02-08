@@ -59,7 +59,7 @@ impl DocxConfig {
         };
         let sweep_interval = Duration::from_secs(sweep_secs);
 
-        let max_entries = read_u64("DOCX_REGISTRY_MAX")?.map(|value| value as usize);
+        let max_entries = read_usize("DOCX_REGISTRY_MAX")?;
 
         Ok(Self {
             db_endpoint,
@@ -72,18 +72,27 @@ impl DocxConfig {
         })
     }
 
-    pub fn db_name_for_solution(&self, solution: &str) -> String {
+    pub fn db_name_for_solution(solution: &str) -> String {
         solution.to_string()
     }
 }
 
 fn read_u64(name: &'static str) -> Result<Option<u64>, ConfigError> {
-    let value = match env::var(name) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
+    let Ok(value) = env::var(name) else {
+        return Ok(None);
     };
     let parsed = value
         .parse::<u64>()
+        .map_err(|_| ConfigError::InvalidNumber { name, value })?;
+    Ok(Some(parsed))
+}
+
+fn read_usize(name: &'static str) -> Result<Option<usize>, ConfigError> {
+    let Ok(value) = env::var(name) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .parse::<usize>()
         .map_err(|_| ConfigError::InvalidNumber { name, value })?;
     Ok(Some(parsed))
 }

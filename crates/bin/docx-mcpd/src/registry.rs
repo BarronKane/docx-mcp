@@ -34,7 +34,7 @@ pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Client> {
                 .map_err(map_build_error)?;
             }
 
-            let db_name = config.db_name_for_solution(&solution);
+            let db_name = DocxConfig::db_name_for_solution(&solution);
             db.use_ns(&config.db_namespace)
                 .use_db(db_name)
                 .await

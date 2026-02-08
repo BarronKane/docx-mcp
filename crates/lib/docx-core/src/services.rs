@@ -30,6 +30,7 @@ pub struct SolutionRegistryConfig<C: Connection> {
 }
 
 impl<C: Connection> SolutionRegistryConfig<C> {
+    #[must_use]
     pub fn new(build_handle: BuildHandleFn<C>) -> Self {
         Self {
             ttl: None,
@@ -39,17 +40,20 @@ impl<C: Connection> SolutionRegistryConfig<C> {
         }
     }
 
-    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+    #[must_use]
+    pub const fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
-    pub fn with_sweep_interval(mut self, sweep_interval: Duration) -> Self {
+    #[must_use]
+    pub const fn with_sweep_interval(mut self, sweep_interval: Duration) -> Self {
         self.sweep_interval = sweep_interval;
         self
     }
 
-    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_entries(mut self, max_entries: usize) -> Self {
         self.max_entries = Some(max_entries);
         self
     }
@@ -94,24 +98,29 @@ impl<C: Connection> Clone for SolutionHandle<C> {
 }
 
 impl<C: Connection> SolutionHandle<C> {
+    #[must_use]
     pub fn new(db: Arc<Surreal<C>>) -> Self {
         let store = SurrealDocStore::from_arc(db.clone());
         let control = DocxControlPlane::with_store(store.clone());
         Self { db, store, control }
     }
 
+    #[must_use]
     pub fn from_surreal(db: Surreal<C>) -> Self {
         Self::new(Arc::new(db))
     }
 
+    #[must_use]
     pub fn db(&self) -> Arc<Surreal<C>> {
         self.db.clone()
     }
 
+    #[must_use]
     pub fn store(&self) -> SurrealDocStore<C> {
         self.store.clone()
     }
 
+    #[must_use]
     pub fn control(&self) -> DocxControlPlane<C> {
         self.control.clone()
     }
@@ -154,6 +163,7 @@ impl<C: Connection> SolutionEntry<C> {
 }
 
 impl<C: Connection> SolutionRegistry<C> {
+    #[must_use]
     pub fn new(config: SolutionRegistryConfig<C>) -> Self {
         Self {
             inner: Arc::new(SolutionRegistryInner {
@@ -163,6 +173,10 @@ impl<C: Connection> SolutionRegistry<C> {
         }
     }
 
+    /// Gets the solution handle or builds it once if missing.
+    ///
+    /// # Errors
+    /// Returns `RegistryError` if capacity is exceeded or the build fails.
     pub async fn get_or_init(
         &self,
         solution: &str,
@@ -172,22 +186,21 @@ impl<C: Connection> SolutionRegistry<C> {
             map.get(solution).cloned()
         };
 
-        let entry = match entry {
-            Some(entry) => entry,
-            None => {
-                let mut map = self.inner.entries.write().await;
-                if let Some(entry) = map.get(solution).cloned() {
-                    entry
-                } else {
-                    if let Some(max_entries) = self.inner.config.max_entries {
-                        if map.len() >= max_entries {
-                            return Err(RegistryError::CapacityReached { max: max_entries });
-                        }
-                    }
-                    let entry = Arc::new(SolutionEntry::new());
-                    map.insert(solution.to_string(), entry.clone());
-                    entry
+        let entry = if let Some(entry) = entry {
+            entry
+        } else {
+            let mut map = self.inner.entries.write().await;
+            if let Some(entry) = map.get(solution).cloned() {
+                entry
+            } else {
+                if let Some(max_entries) = self.inner.config.max_entries
+                    && map.len() >= max_entries
+                {
+                    return Err(RegistryError::CapacityReached { max: max_entries });
                 }
+                let entry = Arc::new(SolutionEntry::new());
+                map.insert(solution.to_string(), entry.clone());
+                entry
             }
         };
 
@@ -217,6 +230,7 @@ impl<C: Connection> SolutionRegistry<C> {
         before.saturating_sub(map.len())
     }
 
+    #[must_use]
     pub fn spawn_sweeper(self) -> Option<tokio::task::JoinHandle<()>>
     where
         C: Send + Sync + 'static,
@@ -235,10 +249,11 @@ impl<C: Connection> SolutionRegistry<C> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

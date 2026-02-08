@@ -54,23 +54,27 @@ impl<C: Connection> Clone for DocxControlPlane<C> {
 }
 
 impl<C: Connection> DocxControlPlane<C> {
+    #[must_use]
     pub fn new(db: Surreal<C>) -> Self {
         Self {
             store: SurrealDocStore::new(db),
         }
     }
 
-    pub fn from_arc(db: Arc<Surreal<C>>) -> Self {
+    #[must_use]
+    pub const fn from_arc(db: Arc<Surreal<C>>) -> Self {
         Self {
             store: SurrealDocStore::from_arc(db),
         }
     }
 
-    pub fn with_store(store: SurrealDocStore<C>) -> Self {
+    #[must_use]
+    pub const fn with_store(store: SurrealDocStore<C>) -> Self {
         Self { store }
     }
 
-    pub fn store(&self) -> &SurrealDocStore<C> {
+    #[must_use]
+    pub const fn store(&self) -> &SurrealDocStore<C> {
         &self.store
     }
 }

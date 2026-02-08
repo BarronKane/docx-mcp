@@ -22,7 +22,7 @@ use surrealdb::sql::Regex;
 
 #[derive(Debug)]
 pub enum StoreError {
-    Surreal(surrealdb::Error),
+    Surreal(Box<surrealdb::Error>),
     InvalidInput(String),
 }
 
@@ -39,7 +39,7 @@ impl Error for StoreError {}
 
 impl From<surrealdb::Error> for StoreError {
     fn from(err: surrealdb::Error) -> Self {
-        Self::Surreal(err)
+        Self::Surreal(Box::new(err))
     }
 }
 
@@ -58,20 +58,27 @@ impl<C: Connection> Clone for SurrealDocStore<C> {
 }
 
 impl<C: Connection> SurrealDocStore<C> {
+    #[must_use]
     pub fn new(db: Surreal<C>) -> Self {
         Self {
             db: Arc::new(db),
         }
     }
 
-    pub fn from_arc(db: Arc<Surreal<C>>) -> Self {
+    #[must_use]
+    pub const fn from_arc(db: Arc<Surreal<C>>) -> Self {
         Self { db }
     }
 
+    #[must_use]
     pub fn db(&self) -> &Surreal<C> {
         &self.db
     }
 
+    /// Upserts a project record by id.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if validation fails or the database write fails.
     pub async fn upsert_project(&self, project: Project) -> StoreResult<Project> {
         ensure_non_empty(&project.project_id, "project_id")?;
         let fallback = project.clone();
@@ -83,44 +90,70 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(record.unwrap_or(fallback))
     }
 
+    /// Fetches a project by id.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
     pub async fn get_project(&self, project_id: &str) -> StoreResult<Option<Project>> {
         let record: Option<Project> = self.db.select((TABLE_PROJECT, project_id)).await?;
         Ok(record)
     }
 
+    /// Lists projects up to the provided limit.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the limit is invalid or the database query fails.
     pub async fn list_projects(&self, limit: usize) -> StoreResult<Vec<Project>> {
+        let limit = limit_to_i64(limit)?;
         let query = "SELECT * FROM project LIMIT $limit;";
-        let mut response = self.db.query(query).bind(("limit", limit as i64)).await?;
+        let mut response = self.db.query(query).bind(("limit", limit)).await?;
         let records: Vec<Project> = response.take(0)?;
         Ok(records)
     }
 
+    /// Searches projects by name or alias pattern.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the limit or pattern is invalid or the database query fails.
     pub async fn search_projects(&self, pattern: &str, limit: usize) -> StoreResult<Vec<Project>> {
         let Some(pattern) = normalize_pattern(pattern) else {
             return self.list_projects(limit).await;
         };
+        let limit = limit_to_i64(limit)?;
         let regex = build_project_regex(&pattern)?;
         let query = "SELECT * FROM project WHERE search_text != NONE AND string::matches(search_text, $pattern) LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
             .bind(("pattern", regex))
-            .bind(("limit", limit as i64))
+            .bind(("limit", limit))
             .await?;
         let records: Vec<Project> = response.take(0)?;
         Ok(records)
     }
 
+    /// Creates an ingest record.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_ingest(&self, ingest: Ingest) -> StoreResult<Ingest> {
         let record: Option<Ingest> = self.db.create(TABLE_INGEST).content(ingest).await?;
         require_record(record, TABLE_INGEST)
     }
 
+    /// Creates a document source record.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_source(&self, source: DocSource) -> StoreResult<DocSource> {
         let record: Option<DocSource> = self.db.create(TABLE_DOC_SOURCE).content(source).await?;
         require_record(record, TABLE_DOC_SOURCE)
     }
 
+    /// Upserts a symbol record by symbol key.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if validation fails or the database write fails.
     pub async fn upsert_symbol(&self, symbol: Symbol) -> StoreResult<Symbol> {
         ensure_non_empty(&symbol.symbol_key, "symbol_key")?;
         let fallback = symbol.clone();
@@ -132,11 +165,19 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(record.unwrap_or(fallback))
     }
 
+    /// Creates a document block record.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_block(&self, block: DocBlock) -> StoreResult<DocBlock> {
         let record: Option<DocBlock> = self.db.create(TABLE_DOC_BLOCK).content(block).await?;
         require_record(record, TABLE_DOC_BLOCK)
     }
 
+    /// Creates document block records.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_blocks(&self, blocks: Vec<DocBlock>) -> StoreResult<Vec<DocBlock>> {
         if blocks.is_empty() {
             return Ok(Vec::new());
@@ -145,6 +186,10 @@ impl<C: Connection> SurrealDocStore<C> {
         require_record(records, TABLE_DOC_BLOCK)
     }
 
+    /// Creates document chunk records.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_chunks(&self, chunks: Vec<DocChunk>) -> StoreResult<Vec<DocChunk>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
@@ -153,6 +198,10 @@ impl<C: Connection> SurrealDocStore<C> {
         require_record(records, TABLE_DOC_CHUNK)
     }
 
+    /// Creates a relation record in the specified table.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_relation(
         &self,
         table: &str,
@@ -162,6 +211,10 @@ impl<C: Connection> SurrealDocStore<C> {
         require_record(record, table)
     }
 
+    /// Creates relation records in the specified table.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database write fails.
     pub async fn create_relations(
         &self,
         table: &str,
@@ -174,11 +227,19 @@ impl<C: Connection> SurrealDocStore<C> {
         require_record(records, table)
     }
 
+    /// Fetches a symbol by key.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
     pub async fn get_symbol(&self, symbol_key: &str) -> StoreResult<Option<Symbol>> {
         let record: Option<Symbol> = self.db.select((TABLE_SYMBOL, symbol_key)).await?;
         Ok(record)
     }
 
+    /// Fetches a symbol by project id and key.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
     pub async fn get_symbol_by_project(
         &self,
         project_id: &str,
@@ -197,6 +258,10 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(records.pop())
     }
 
+    /// Lists symbols by name match within a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the limit is invalid or the database query fails.
     pub async fn list_symbols_by_name(
         &self,
         project_id: &str,
@@ -205,18 +270,23 @@ impl<C: Connection> SurrealDocStore<C> {
     ) -> StoreResult<Vec<Symbol>> {
         let project_id = project_id.to_string();
         let name = name.to_string();
+        let limit = limit_to_i64(limit)?;
         let query = "SELECT * FROM symbol WHERE project_id = $project_id AND name CONTAINS $name LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
             .bind(("project_id", project_id))
             .bind(("name", name))
-            .bind(("limit", limit as i64))
+            .bind(("limit", limit))
             .await?;
         let records: Vec<Symbol> = response.take(0)?;
         Ok(records)
     }
 
+    /// Lists distinct symbol kinds for a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
     pub async fn list_symbol_kinds(&self, project_id: &str) -> StoreResult<Vec<String>> {
         let project_id = project_id.to_string();
         let query = "SELECT kind FROM symbol WHERE project_id = $project_id GROUP BY kind;";
@@ -236,6 +306,10 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(kinds)
     }
 
+    /// Lists members by scope prefix or glob pattern.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the scope or limit is invalid or the database query fails.
     pub async fn list_members_by_scope(
         &self,
         project_id: &str,
@@ -246,6 +320,7 @@ impl<C: Connection> SurrealDocStore<C> {
             return Ok(Vec::new());
         };
         let project_id = project_id.to_string();
+        let limit = limit_to_i64(limit)?;
         let mut response = if scope.contains('*') {
             let regex = build_scope_regex(&scope)?;
             let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::matches(string::lowercase(qualified_name), $pattern) LIMIT $limit;";
@@ -253,7 +328,7 @@ impl<C: Connection> SurrealDocStore<C> {
                 .query(query)
                 .bind(("project_id", project_id))
                 .bind(("pattern", regex))
-                .bind(("limit", limit as i64))
+                .bind(("limit", limit))
                 .await?
         } else {
             let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::starts_with(string::lowercase(qualified_name), $scope) LIMIT $limit;";
@@ -261,13 +336,17 @@ impl<C: Connection> SurrealDocStore<C> {
                 .query(query)
                 .bind(("project_id", project_id))
                 .bind(("scope", scope))
-                .bind(("limit", limit as i64))
+                .bind(("limit", limit))
                 .await?
         };
         let records: Vec<Symbol> = response.take(0)?;
         Ok(records)
     }
 
+    /// Lists document blocks for a symbol, optionally filtering by ingest id.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
     pub async fn list_doc_blocks(
         &self,
         project_id: &str,
@@ -276,17 +355,16 @@ impl<C: Connection> SurrealDocStore<C> {
     ) -> StoreResult<Vec<DocBlock>> {
         let project_id = project_id.to_string();
         let symbol_key = symbol_key.to_string();
-        let (query, binds) = if let Some(ingest_id) = ingest_id {
-            (
-                "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key AND ingest_id = $ingest_id;",
-                Some(ingest_id.to_string()),
-            )
-        } else {
+        let (query, binds) = ingest_id.map_or(
             (
                 "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key;",
                 None,
-            )
-        };
+            ),
+            |ingest_id| (
+                "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key AND ingest_id = $ingest_id;",
+                Some(ingest_id.to_string()),
+            ),
+        );
         let response = self
             .db
             .query(query)
@@ -301,6 +379,10 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(records)
     }
 
+    /// Searches document blocks by text within a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the limit is invalid or the database query fails.
     pub async fn search_doc_blocks(
         &self,
         project_id: &str,
@@ -309,13 +391,14 @@ impl<C: Connection> SurrealDocStore<C> {
     ) -> StoreResult<Vec<DocBlock>> {
         let project_id = project_id.to_string();
         let text = text.to_string();
+        let limit = limit_to_i64(limit)?;
         let query = "SELECT * FROM doc_block WHERE project_id = $project_id AND (summary CONTAINS $text OR remarks CONTAINS $text OR returns CONTAINS $text) LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
             .bind(("project_id", project_id))
             .bind(("text", text))
-            .bind(("limit", limit as i64))
+            .bind(("limit", limit))
             .await?;
         let records: Vec<DocBlock> = response.take(0)?;
         Ok(records)
@@ -351,9 +434,15 @@ fn normalize_pattern(pattern: &str) -> Option<String> {
     }
 }
 
+fn limit_to_i64(limit: usize) -> StoreResult<i64> {
+    i64::try_from(limit).map_err(|_| {
+        StoreError::InvalidInput("limit exceeds supported range".to_string())
+    })
+}
+
 fn build_project_regex(pattern: &str) -> StoreResult<Regex> {
     let body = glob_to_regex_body(pattern);
-    let regex = format!(r"(^|\|){}(\||$)", body);
+    let regex = format!(r"(^|\|){body}(\||$)");
     Regex::from_str(&regex).map_err(|err| {
         StoreError::InvalidInput(format!("Invalid project search pattern: {err}"))
     })
@@ -361,7 +450,7 @@ fn build_project_regex(pattern: &str) -> StoreResult<Regex> {
 
 fn build_scope_regex(pattern: &str) -> StoreResult<Regex> {
     let body = glob_to_regex_body(pattern);
-    let regex = format!(r"^{}$", body);
+    let regex = format!(r"^{body}$");
     Regex::from_str(&regex).map_err(|err| {
         StoreError::InvalidInput(format!("Invalid scope search pattern: {err}"))
     })

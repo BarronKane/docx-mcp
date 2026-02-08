@@ -20,6 +20,10 @@ pub struct ProjectUpsertRequest {
 }
 
 impl<C: Connection> DocxControlPlane<C> {
+    /// Upserts a project and merges aliases.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the input is invalid or the store operation fails.
     pub async fn upsert_project(
         &self,
         request: ProjectUpsertRequest,
@@ -70,10 +74,8 @@ impl<C: Connection> DocxControlPlane<C> {
 
         merge_aliases(&mut project.aliases, &aliases);
 
-        if project.name.is_none() {
-            if let Some(first_alias) = project.aliases.first() {
-                project.name = Some(first_alias.clone());
-            }
+        if project.name.is_none() && let Some(first_alias) = project.aliases.first() {
+            project.name = Some(first_alias.clone());
         }
 
         project.search_text = build_project_search_text(&project);
@@ -81,14 +83,26 @@ impl<C: Connection> DocxControlPlane<C> {
         Ok(self.store.upsert_project(project).await?)
     }
 
+    /// Fetches a project by id.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
     pub async fn get_project(&self, project_id: &str) -> Result<Option<Project>, ControlError> {
         Ok(self.store.get_project(project_id).await?)
     }
 
+    /// Lists projects with an optional limit.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
     pub async fn list_projects(&self, limit: usize) -> Result<Vec<Project>, ControlError> {
         Ok(self.store.list_projects(limit).await?)
     }
 
+    /// Searches projects by a name or alias pattern.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
     pub async fn search_projects(
         &self,
         pattern: &str,

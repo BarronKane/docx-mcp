@@ -22,10 +22,12 @@ pub const SOURCE_KIND_CSHARP_XML: &str = "csharp_xml";
 pub const SOURCE_KIND_RUSTDOC_JSON: &str = "rustdoc_json";
 pub const SOURCE_KIND_DOXYGEN_XML: &str = "doxygen_xml";
 
+#[must_use]
 pub fn make_symbol_key(language: &str, project_id: &str, local_id: &str) -> String {
     format!("{language}|{project_id}|{local_id}")
 }
 
+#[must_use]
 pub fn make_csharp_symbol_key(project_id: &str, doc_id: &str) -> String {
     make_symbol_key("csharp", project_id, doc_id)
 }

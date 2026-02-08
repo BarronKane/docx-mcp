@@ -6,6 +6,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "MCP tools and helpers for docx-mcp."
+readme = "../../../README.md"
+keywords = ["docx", "mcp", "tools"]
+categories = ["development-tools"]
 
 [dependencies]
 docx-core = { path = "../docx-core" }
@@ -13,3 +17,6 @@ rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 surrealdb.workspace = true
+
+[lints]
+workspace = true

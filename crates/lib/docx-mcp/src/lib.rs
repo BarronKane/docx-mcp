@@ -23,10 +23,12 @@ pub struct DocxMcp<C: Connection> {
 }
 
 impl<C: Connection> DocxMcp<C> {
+    #[must_use]
     pub fn new(registry: SolutionRegistry<C>) -> Self {
         Self::with_registry(Arc::new(registry))
     }
 
+    #[must_use]
     pub fn with_registry(registry: Arc<SolutionRegistry<C>>) -> Self {
         let tool_router = Self::tool_router_core()
             + Self::tool_router_metadata()

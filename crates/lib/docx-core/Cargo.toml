@@ -6,6 +6,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Core types and helpers for docx-mcp."
+readme = "../../../README.md"
+keywords = ["docx", "mcp", "core"]
+categories = ["development-tools"]
 
 [dependencies]
 docx-store = { path = "../docx-store" }

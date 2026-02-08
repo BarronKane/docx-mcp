@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -22,7 +22,7 @@ pub struct Project {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ingest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -43,7 +43,7 @@ pub struct Ingest {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -66,7 +66,7 @@ pub struct DocSource {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Symbol {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -122,7 +122,7 @@ pub struct Symbol {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
@@ -133,12 +133,12 @@ pub struct TypeRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub generics: Vec<TypeRef>,
+    pub generics: Vec<Self>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modifiers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,14 +149,14 @@ pub struct Param {
     pub is_optional: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeParam {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttributeRef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -165,13 +165,13 @@ pub struct AttributeRef {
     pub target: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceId {
     pub kind: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -226,7 +226,7 @@ pub struct DocBlock {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocParam {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,14 +235,14 @@ pub struct DocParam {
     pub type_ref: Option<TypeRef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocTypeParam {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocException {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_ref: Option<TypeRef>,
@@ -250,7 +250,7 @@ pub struct DocException {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocExample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
@@ -260,7 +260,7 @@ pub struct DocExample {
     pub caption: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeeAlso {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -269,7 +269,7 @@ pub struct SeeAlso {
     pub target_kind: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocInherit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cref: Option<String>,
@@ -277,7 +277,7 @@ pub struct DocInherit {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocSection {
     pub title: String,
     pub body: String,
@@ -304,7 +304,7 @@ pub struct DocChunk {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelationRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,

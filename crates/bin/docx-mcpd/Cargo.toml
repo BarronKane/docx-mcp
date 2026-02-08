@@ -6,6 +6,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Docx MCP daemon."
+readme = "../../../README.md"
+keywords = ["docx", "mcp", "server"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tokio.workspace = true

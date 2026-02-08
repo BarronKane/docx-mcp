@@ -32,6 +32,10 @@ pub struct CsharpIngestReport {
 }
 
 impl<C: Connection> DocxControlPlane<C> {
+    /// Ingests C# XML documentation into the store.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if validation fails, parsing fails, or store writes fail.
     pub async fn ingest_csharp_xml(
         &self,
         request: CsharpIngestRequest,

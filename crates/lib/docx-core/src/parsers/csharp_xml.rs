@@ -32,6 +32,7 @@ impl CsharpParseOptions {
         }
     }
 
+    #[must_use]
     pub fn with_ingest_id(mut self, ingest_id: impl Into<String>) -> Self {
         self.ingest_id = Some(ingest_id.into());
         self
@@ -87,6 +88,11 @@ impl From<tokio::task::JoinError> for CsharpParseError {
 pub struct CsharpXmlParser;
 
 impl CsharpXmlParser {
+    /// Parses C# XML documentation into symbols and doc blocks.
+    ///
+    /// # Errors
+    /// Returns `CsharpParseError` if the XML is invalid or cannot be parsed.
+    #[allow(clippy::too_many_lines)]
     pub fn parse(xml: &str, options: &CsharpParseOptions) -> Result<CsharpParseOutput, CsharpParseError> {
         let doc = Document::parse(xml)?;
         let assembly_name = extract_assembly_name(&doc);
@@ -163,7 +169,7 @@ impl CsharpXmlParser {
                 extra: None,
             };
 
-            for child in member.children().filter(|node| node.is_element()) {
+            for child in member.children().filter(Node::is_element) {
                 match child.tag_name().name() {
                     "summary" => doc_block.summary = optional_text(child),
                     "remarks" => doc_block.remarks = optional_text(child),
@@ -233,8 +239,8 @@ impl CsharpXmlParser {
                         }
                     }
                     "inheritdoc" => {
-                        let cref = child.attribute("cref").map(|value| value.to_string());
-                        let path = child.attribute("path").map(|value| value.to_string());
+                        let cref = child.attribute("cref").map(str::to_string);
+                        let path = child.attribute("path").map(str::to_string);
                         doc_block.inherit_doc = Some(DocInherit { cref, path });
                     }
                     "deprecated" => {
@@ -248,7 +254,7 @@ impl CsharpXmlParser {
             }
 
             if doc_block.summary.is_some() {
-                symbol.doc_summary = doc_block.summary.clone();
+                symbol.doc_summary.clone_from(&doc_block.summary);
             }
 
             let range = member.range();
@@ -265,6 +271,10 @@ impl CsharpXmlParser {
         })
     }
 
+    /// Parses XML asynchronously using a blocking task.
+    ///
+    /// # Errors
+    /// Returns `CsharpParseError` if parsing fails or the task panics.
     pub async fn parse_async(
         xml: String,
         options: CsharpParseOptions,
@@ -272,6 +282,10 @@ impl CsharpXmlParser {
         tokio::task::spawn_blocking(move || Self::parse(&xml, &options)).await?
     }
 
+    /// Parses XML from a file path asynchronously.
+    ///
+    /// # Errors
+    /// Returns `CsharpParseError` if the file cannot be read or the XML cannot be parsed.
     pub async fn parse_file(
         path: impl AsRef<Path>,
         options: CsharpParseOptions,
@@ -318,7 +332,7 @@ fn parse_doc_id(doc_id: &str) -> DocIdParts {
     let name = qualified_name
         .as_deref()
         .and_then(extract_simple_name)
-        .map(|value| value.to_string());
+        .map(str::to_string);
 
     DocIdParts {
         kind,
@@ -330,7 +344,7 @@ fn parse_doc_id(doc_id: &str) -> DocIdParts {
 }
 
 fn extract_simple_name(value: &str) -> Option<&str> {
-    value.rsplit(|ch| ch == '.' || ch == '+' || ch == '#').next()
+    value.rsplit(['.', '+', '#']).next()
 }
 
 fn extract_assembly_name(doc: &Document<'_>) -> Option<String> {
@@ -397,7 +411,7 @@ fn render_code_block(node: Node<'_, '_>) -> String {
     if code_text.is_empty() {
         String::new()
     } else {
-        format!("\n```\n{}\n```\n", code_text)
+        format!("\n```\n{code_text}\n```\n")
     }
 }
 
@@ -413,7 +427,7 @@ fn render_inline_link(node: Node<'_, '_>) -> String {
     } else if label.is_empty() {
         target.to_string()
     } else {
-        format!("[{}]({})", label, target)
+        format!("[{label}]({target})")
     }
 }
 
@@ -422,7 +436,7 @@ fn render_ref(node: Node<'_, '_>) -> String {
     if name.is_empty() {
         String::new()
     } else {
-        format!("`{}`", name)
+        format!("`{name}`")
     }
 }
 
@@ -445,7 +459,7 @@ fn render_list(node: Node<'_, '_>) -> String {
         };
         let text = text.trim();
         if !text.is_empty() {
-            lines.push(format!("- {}", text));
+            lines.push(format!("- {text}"));
         }
     }
     if lines.is_empty() {
@@ -513,7 +527,7 @@ fn parse_see_also(node: Node<'_, '_>) -> Option<SeeAlso> {
     let target = node
         .attribute("cref")
         .or_else(|| node.attribute("href"))
-        .map(|value| value.to_string())?;
+        .map(str::to_string)?;
     let label = node.text().map(|text| text.trim().to_string());
     let label = match label {
         Some(text) if text.is_empty() => None,
