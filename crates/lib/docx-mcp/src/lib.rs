@@ -1,40 +1,83 @@
 mod helpers;
+mod tools;
 
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
+use docx_core::control::DocxControlPlane;
+use docx_core::services::{RegistryError, SolutionRegistry};
 use rmcp::{
     ErrorData,
     ServerHandler,
     handler::server::tool::ToolRouter,
-    handler::server::wrapper::{Json, Parameters},
-    schemars,
     tool,
     tool_handler,
     tool_router,
 };
 use rmcp::model::{CallToolResult, Content};
-use serde::{
-    Serialize,
-    Deserialize,
-};
+use surrealdb::Connection;
 
 #[derive(Clone)]
-pub struct DocxMcp {
-    tool_router: ToolRouter<Self>
+pub struct DocxMcp<C: Connection> {
+    tool_router: ToolRouter<Self>,
+    registry: Arc<SolutionRegistry<C>>,
 }
 
-impl DocxMcp {
-    pub fn new() -> Self {
+impl<C: Connection> DocxMcp<C> {
+    pub fn new(registry: SolutionRegistry<C>) -> Self {
+        Self::with_registry(Arc::new(registry))
+    }
+
+    pub fn with_registry(registry: Arc<SolutionRegistry<C>>) -> Self {
+        let tool_router = Self::tool_router_core()
+            + Self::tool_router_metadata()
+            + Self::tool_router_data();
         Self {
-            tool_router: ToolRouter::new()
+            tool_router,
+            registry,
         }
+    }
+
+    pub async fn solution_names(&self) -> Vec<String> {
+        self.registry.list_solutions().await
+    }
+
+    pub(crate) async fn control_for_solution(
+        &self,
+        solution: &str,
+    ) -> Result<DocxControlPlane<C>, ErrorData> {
+        let handle = self
+            .registry
+            .get_or_init(solution)
+            .await
+            .map_err(map_registry_err)?;
+        Ok(handle.control())
     }
 }
 
-#[tool_router]
-impl DocxMcp {
+fn map_registry_err(err: RegistryError) -> ErrorData {
+    match err {
+        RegistryError::UnknownSolution(solution) => helpers::mcp_err(
+            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+            format!("unknown solution: {solution}"),
+        ),
+        RegistryError::CapacityReached { max } => helpers::mcp_err(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            format!("solution registry capacity reached (max {max})"),
+        ),
+        RegistryError::BuildFailed(message) => helpers::mcp_err(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            format!("failed to build solution handle: {message}"),
+        ),
+    }
+}
+
+#[tool_router(router = tool_router_core, vis = "pub")]
+impl<C: Connection> DocxMcp<C> {
     #[tool(description = "Health check. Returns 'ok'.")]
     async fn health(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text("ok")]))
     }
 }
+
+#[tool_handler]
+impl<C: Connection> ServerHandler for DocxMcp<C> {}

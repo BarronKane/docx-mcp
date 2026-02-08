@@ -6,8 +6,11 @@ DEFINE FIELD name ON TABLE project TYPE string;
 DEFINE FIELD language ON TABLE project TYPE string;
 DEFINE FIELD root_path ON TABLE project TYPE string;
 DEFINE FIELD description ON TABLE project TYPE string;
+DEFINE FIELD aliases ON TABLE project TYPE array;
+DEFINE FIELD search_text ON TABLE project TYPE string;
 DEFINE FIELD extra ON TABLE project TYPE object;
 DEFINE INDEX project_project_id ON TABLE project COLUMNS project_id UNIQUE;
+DEFINE INDEX project_search_text ON TABLE project COLUMNS search_text;
 
 DEFINE TABLE ingest SCHEMAFULL;
 DEFINE FIELD project_id ON TABLE ingest TYPE string;

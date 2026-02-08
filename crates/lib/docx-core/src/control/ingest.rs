@@ -1,41 +1,15 @@
-use std::{collections::HashMap, error::Error, fmt};
+use std::collections::HashMap;
 
 use docx_store::models::{DocBlock, DocSource, RelationRecord, Symbol};
 use docx_store::schema::{REL_DOCUMENTS, SOURCE_KIND_CSHARP_XML};
 use serde::{Deserialize, Serialize};
-use surrealdb::{Connection, Surreal};
+use surrealdb::Connection;
 
-use crate::parsers::{CsharpParseError, CsharpParseOptions, CsharpXmlParser};
-use crate::store::{StoreError, SurrealDocStore};
+use crate::parsers::{CsharpParseOptions, CsharpXmlParser};
+use crate::store::StoreError;
 
-#[derive(Debug)]
-pub enum ControlError {
-    Parse(CsharpParseError),
-    Store(StoreError),
-}
-
-impl fmt::Display for ControlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parse(err) => write!(f, "{err}"),
-            Self::Store(err) => write!(f, "{err}"),
-        }
-    }
-}
-
-impl Error for ControlError {}
-
-impl From<CsharpParseError> for ControlError {
-    fn from(err: CsharpParseError) -> Self {
-        Self::Parse(err)
-    }
-}
-
-impl From<StoreError> for ControlError {
-    fn from(err: StoreError) -> Self {
-        Self::Store(err)
-    }
-}
+use super::{ControlError, DocxControlPlane};
+use super::metadata::ProjectUpsertRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsharpIngestRequest {
@@ -57,26 +31,7 @@ pub struct CsharpIngestReport {
     pub doc_source_id: Option<String>,
 }
 
-#[derive(Clone)]
-pub struct DocxControlPlane<C: Connection> {
-    store: SurrealDocStore<C>,
-}
-
 impl<C: Connection> DocxControlPlane<C> {
-    pub fn new(db: Surreal<C>) -> Self {
-        Self {
-            store: SurrealDocStore::new(db),
-        }
-    }
-
-    pub fn with_store(store: SurrealDocStore<C>) -> Self {
-        Self { store }
-    }
-
-    pub fn store(&self) -> &SurrealDocStore<C> {
-        &self.store
-    }
-
     pub async fn ingest_csharp_xml(
         &self,
         request: CsharpIngestRequest,
@@ -103,6 +58,19 @@ impl<C: Connection> DocxControlPlane<C> {
         }
 
         let parsed = CsharpXmlParser::parse_async(xml, options).await?;
+
+        if let Some(ref assembly_name) = parsed.assembly_name {
+            let _ = self
+                .upsert_project(ProjectUpsertRequest {
+                    project_id: project_id.clone(),
+                    name: None,
+                    language: Some("csharp".to_string()),
+                    root_path: None,
+                    description: None,
+                    aliases: vec![assembly_name.clone()],
+                })
+                .await?;
+        }
 
         let mut stored_symbols = Vec::with_capacity(parsed.symbols.len());
         for symbol in parsed.symbols {
@@ -152,47 +120,6 @@ impl<C: Connection> DocxControlPlane<C> {
             documents_edge_count,
             doc_source_id,
         })
-    }
-
-    pub async fn get_symbol(
-        &self,
-        project_id: &str,
-        symbol_key: &str,
-    ) -> Result<Option<Symbol>, ControlError> {
-        Ok(self.store.get_symbol_by_project(project_id, symbol_key).await?)
-    }
-
-    pub async fn list_doc_blocks(
-        &self,
-        project_id: &str,
-        symbol_key: &str,
-        ingest_id: Option<&str>,
-    ) -> Result<Vec<DocBlock>, ControlError> {
-        Ok(self
-            .store
-            .list_doc_blocks(project_id, symbol_key, ingest_id)
-            .await?)
-    }
-
-    pub async fn search_symbols(
-        &self,
-        project_id: &str,
-        name: &str,
-        limit: usize,
-    ) -> Result<Vec<Symbol>, ControlError> {
-        Ok(self
-            .store
-            .list_symbols_by_name(project_id, name, limit)
-            .await?)
-    }
-
-    pub async fn search_doc_blocks(
-        &self,
-        project_id: &str,
-        text: &str,
-        limit: usize,
-    ) -> Result<Vec<DocBlock>, ControlError> {
-        Ok(self.store.search_doc_blocks(project_id, text, limit).await?)
     }
 }
 

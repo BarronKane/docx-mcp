@@ -18,6 +18,8 @@ Rust crate) inside the solution.
 ## Key fields
 
 - `project.project_id`: Stable project identifier in the solution.
+- `project.aliases`: Alternate names (assembly name, crate name, root namespace).
+- `project.search_text`: Lowercased join of `project_id`, `name`, and `aliases` for wildcard lookups.
 - `symbol.symbol_key`: Canonical symbol ID. Recommended format:
   `{language}|{project_id}|{source_id}`.
 - `doc_block.doc_hash`: Optional hash for dedupe across ingests.
@@ -41,8 +43,3 @@ interpret it by language at query time.
 When ingesting, compute a `doc_hash` over normalized doc content. If a new
 `doc_block` has the same `doc_hash` for the same `project_id` and `symbol_key`,
 it can be skipped or linked to the new `ingest` without duplication.
-
-## Files in this folder
-
-- `surrealdb.surql`: Draft SurrealDB schema (tables, fields, indexes).
-- `dotnet_xml_mapping.md`: Mapping spec for .NET XML docs.

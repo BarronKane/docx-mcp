@@ -251,9 +251,8 @@ impl CsharpXmlParser {
                 symbol.doc_summary = doc_block.summary.clone();
             }
 
-            if let Some(range) = member.range() {
-                doc_block.raw = Some(xml[range].to_string());
-            }
+            let range = member.range();
+            doc_block.raw = Some(xml[range].to_string());
 
             symbols.push(symbol);
             doc_blocks.push(doc_block);

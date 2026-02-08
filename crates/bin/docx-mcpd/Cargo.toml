@@ -9,6 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 tokio.workspace = true
+rmcp.workspace = true
+surrealdb.workspace = true
 
 docx-core = { path = "../../lib/docx-core" }
 docx-store = { path = "../../lib/docx-store" }

@@ -11,11 +11,11 @@ authors = ["Lance Wallis <walance.pvas.me>"]
 edition = "2024"
 repository = "https://github.com/BarronKane/docx-mcp"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 rmcp = { version = "0.14.0", features = ["server", "transport-io", "macros"]}
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time", "sync"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = {  version = "1.0.149" }
 surrealdb = { version = "2.6.0", features = ["default"] }

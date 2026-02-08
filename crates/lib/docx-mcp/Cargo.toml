@@ -8,6 +8,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+docx-core = { path = "../docx-core" }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+surrealdb.workspace = true

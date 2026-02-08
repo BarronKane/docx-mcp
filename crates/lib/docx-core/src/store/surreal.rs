@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, str::FromStr, sync::Arc};
 
 use docx_store::models::{
     DocBlock,
@@ -18,6 +18,7 @@ use docx_store::schema::{
     TABLE_SYMBOL,
 };
 use surrealdb::{Connection, Surreal};
+use surrealdb::sql::Regex;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -44,9 +45,16 @@ impl From<surrealdb::Error> for StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
-#[derive(Clone)]
 pub struct SurrealDocStore<C: Connection> {
     db: Arc<Surreal<C>>,
+}
+
+impl<C: Connection> Clone for SurrealDocStore<C> {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+        }
+    }
 }
 
 impl<C: Connection> SurrealDocStore<C> {
@@ -75,14 +83,42 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(record.unwrap_or(fallback))
     }
 
-    pub async fn create_ingest(&self, ingest: Ingest) -> StoreResult<Ingest> {
-        let record: Ingest = self.db.create(TABLE_INGEST).content(ingest).await?;
+    pub async fn get_project(&self, project_id: &str) -> StoreResult<Option<Project>> {
+        let record: Option<Project> = self.db.select((TABLE_PROJECT, project_id)).await?;
         Ok(record)
     }
 
+    pub async fn list_projects(&self, limit: usize) -> StoreResult<Vec<Project>> {
+        let query = "SELECT * FROM project LIMIT $limit;";
+        let mut response = self.db.query(query).bind(("limit", limit as i64)).await?;
+        let records: Vec<Project> = response.take(0)?;
+        Ok(records)
+    }
+
+    pub async fn search_projects(&self, pattern: &str, limit: usize) -> StoreResult<Vec<Project>> {
+        let Some(pattern) = normalize_pattern(pattern) else {
+            return self.list_projects(limit).await;
+        };
+        let regex = build_project_regex(&pattern)?;
+        let query = "SELECT * FROM project WHERE search_text != NONE AND string::matches(search_text, $pattern) LIMIT $limit;";
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("pattern", regex))
+            .bind(("limit", limit as i64))
+            .await?;
+        let records: Vec<Project> = response.take(0)?;
+        Ok(records)
+    }
+
+    pub async fn create_ingest(&self, ingest: Ingest) -> StoreResult<Ingest> {
+        let record: Option<Ingest> = self.db.create(TABLE_INGEST).content(ingest).await?;
+        require_record(record, TABLE_INGEST)
+    }
+
     pub async fn create_doc_source(&self, source: DocSource) -> StoreResult<DocSource> {
-        let record: DocSource = self.db.create(TABLE_DOC_SOURCE).content(source).await?;
-        Ok(record)
+        let record: Option<DocSource> = self.db.create(TABLE_DOC_SOURCE).content(source).await?;
+        require_record(record, TABLE_DOC_SOURCE)
     }
 
     pub async fn upsert_symbol(&self, symbol: Symbol) -> StoreResult<Symbol> {
@@ -97,24 +133,24 @@ impl<C: Connection> SurrealDocStore<C> {
     }
 
     pub async fn create_doc_block(&self, block: DocBlock) -> StoreResult<DocBlock> {
-        let record: DocBlock = self.db.create(TABLE_DOC_BLOCK).content(block).await?;
-        Ok(record)
+        let record: Option<DocBlock> = self.db.create(TABLE_DOC_BLOCK).content(block).await?;
+        require_record(record, TABLE_DOC_BLOCK)
     }
 
     pub async fn create_doc_blocks(&self, blocks: Vec<DocBlock>) -> StoreResult<Vec<DocBlock>> {
         if blocks.is_empty() {
             return Ok(Vec::new());
         }
-        let records: Vec<DocBlock> = self.db.create(TABLE_DOC_BLOCK).content(blocks).await?;
-        Ok(records)
+        let records: Option<Vec<DocBlock>> = self.db.create(TABLE_DOC_BLOCK).content(blocks).await?;
+        require_record(records, TABLE_DOC_BLOCK)
     }
 
     pub async fn create_doc_chunks(&self, chunks: Vec<DocChunk>) -> StoreResult<Vec<DocChunk>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
-        let records: Vec<DocChunk> = self.db.create(TABLE_DOC_CHUNK).content(chunks).await?;
-        Ok(records)
+        let records: Option<Vec<DocChunk>> = self.db.create(TABLE_DOC_CHUNK).content(chunks).await?;
+        require_record(records, TABLE_DOC_CHUNK)
     }
 
     pub async fn create_relation(
@@ -122,8 +158,8 @@ impl<C: Connection> SurrealDocStore<C> {
         table: &str,
         relation: RelationRecord,
     ) -> StoreResult<RelationRecord> {
-        let record: RelationRecord = self.db.create(table).content(relation).await?;
-        Ok(record)
+        let record: Option<RelationRecord> = self.db.create(table).content(relation).await?;
+        require_record(record, table)
     }
 
     pub async fn create_relations(
@@ -134,8 +170,8 @@ impl<C: Connection> SurrealDocStore<C> {
         if relations.is_empty() {
             return Ok(Vec::new());
         }
-        let records: Vec<RelationRecord> = self.db.create(table).content(relations).await?;
-        Ok(records)
+        let records: Option<Vec<RelationRecord>> = self.db.create(table).content(relations).await?;
+        require_record(records, table)
     }
 
     pub async fn get_symbol(&self, symbol_key: &str) -> StoreResult<Option<Symbol>> {
@@ -148,6 +184,8 @@ impl<C: Connection> SurrealDocStore<C> {
         project_id: &str,
         symbol_key: &str,
     ) -> StoreResult<Option<Symbol>> {
+        let project_id = project_id.to_string();
+        let symbol_key = symbol_key.to_string();
         let query = "SELECT * FROM symbol WHERE project_id = $project_id AND symbol_key = $symbol_key LIMIT 1;";
         let mut response = self
             .db
@@ -165,6 +203,8 @@ impl<C: Connection> SurrealDocStore<C> {
         name: &str,
         limit: usize,
     ) -> StoreResult<Vec<Symbol>> {
+        let project_id = project_id.to_string();
+        let name = name.to_string();
         let query = "SELECT * FROM symbol WHERE project_id = $project_id AND name CONTAINS $name LIMIT $limit;";
         let mut response = self
             .db
@@ -177,16 +217,69 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(records)
     }
 
+    pub async fn list_symbol_kinds(&self, project_id: &str) -> StoreResult<Vec<String>> {
+        let project_id = project_id.to_string();
+        let query = "SELECT kind FROM symbol WHERE project_id = $project_id GROUP BY kind;";
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("project_id", project_id))
+            .await?;
+        let records: Vec<SymbolKindRow> = response.take(0)?;
+        let mut kinds: Vec<String> = records
+            .into_iter()
+            .filter_map(|row| row.kind)
+            .filter(|value| !value.trim().is_empty())
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        Ok(kinds)
+    }
+
+    pub async fn list_members_by_scope(
+        &self,
+        project_id: &str,
+        scope: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<Symbol>> {
+        let Some(scope) = normalize_pattern(scope) else {
+            return Ok(Vec::new());
+        };
+        let project_id = project_id.to_string();
+        let mut response = if scope.contains('*') {
+            let regex = build_scope_regex(&scope)?;
+            let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::matches(string::lowercase(qualified_name), $pattern) LIMIT $limit;";
+            self.db
+                .query(query)
+                .bind(("project_id", project_id))
+                .bind(("pattern", regex))
+                .bind(("limit", limit as i64))
+                .await?
+        } else {
+            let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::starts_with(string::lowercase(qualified_name), $scope) LIMIT $limit;";
+            self.db
+                .query(query)
+                .bind(("project_id", project_id))
+                .bind(("scope", scope))
+                .bind(("limit", limit as i64))
+                .await?
+        };
+        let records: Vec<Symbol> = response.take(0)?;
+        Ok(records)
+    }
+
     pub async fn list_doc_blocks(
         &self,
         project_id: &str,
         symbol_key: &str,
         ingest_id: Option<&str>,
     ) -> StoreResult<Vec<DocBlock>> {
+        let project_id = project_id.to_string();
+        let symbol_key = symbol_key.to_string();
         let (query, binds) = if let Some(ingest_id) = ingest_id {
             (
                 "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key AND ingest_id = $ingest_id;",
-                Some(ingest_id),
+                Some(ingest_id.to_string()),
             )
         } else {
             (
@@ -194,12 +287,12 @@ impl<C: Connection> SurrealDocStore<C> {
                 None,
             )
         };
-        let mut response = self
+        let response = self
             .db
             .query(query)
             .bind(("project_id", project_id))
             .bind(("symbol_key", symbol_key));
-        let response = if let Some(ingest_id) = binds {
+        let mut response = if let Some(ingest_id) = binds {
             response.bind(("ingest_id", ingest_id)).await?
         } else {
             response.await?
@@ -214,6 +307,8 @@ impl<C: Connection> SurrealDocStore<C> {
         text: &str,
         limit: usize,
     ) -> StoreResult<Vec<DocBlock>> {
+        let project_id = project_id.to_string();
+        let text = text.to_string();
         let query = "SELECT * FROM doc_block WHERE project_id = $project_id AND (summary CONTAINS $text OR remarks CONTAINS $text OR returns CONTAINS $text) LIMIT $limit;";
         let mut response = self
             .db
@@ -232,4 +327,57 @@ fn ensure_non_empty(value: &str, field: &str) -> StoreResult<()> {
         return Err(StoreError::InvalidInput(format!("{field} is required")));
     }
     Ok(())
+}
+
+fn require_record<T>(record: Option<T>, table: &str) -> StoreResult<T> {
+    record.ok_or_else(|| {
+        StoreError::InvalidInput(format!(
+            "No record returned when creating {table}"
+        ))
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SymbolKindRow {
+    kind: Option<String>,
+}
+
+fn normalize_pattern(pattern: &str) -> Option<String> {
+    let trimmed = pattern.trim().to_lowercase();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn build_project_regex(pattern: &str) -> StoreResult<Regex> {
+    let body = glob_to_regex_body(pattern);
+    let regex = format!(r"(^|\|){}(\||$)", body);
+    Regex::from_str(&regex).map_err(|err| {
+        StoreError::InvalidInput(format!("Invalid project search pattern: {err}"))
+    })
+}
+
+fn build_scope_regex(pattern: &str) -> StoreResult<Regex> {
+    let body = glob_to_regex_body(pattern);
+    let regex = format!(r"^{}$", body);
+    Regex::from_str(&regex).map_err(|err| {
+        StoreError::InvalidInput(format!("Invalid scope search pattern: {err}"))
+    })
+}
+
+fn glob_to_regex_body(pattern: &str) -> String {
+    let mut escaped = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '*' => escaped.push_str(".*"),
+            '.' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
