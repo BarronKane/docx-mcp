@@ -15,17 +15,23 @@ use tokio::sync::{OnceCell, RwLock};
 use crate::control::DocxControlPlane;
 use crate::store::SurrealDocStore;
 
+/// Future returned by the solution handle builder.
 pub type BuildHandleFuture<C> =
     Pin<Box<dyn Future<Output = Result<Arc<SolutionHandle<C>>, RegistryError>> + Send + 'static>>;
+/// Builder function that creates a solution handle for a solution name.
 pub type BuildHandleFn<C> =
     Arc<dyn Fn(String) -> BuildHandleFuture<C> + Send + Sync + 'static>;
 
 /// Configuration for the solution registry cache and builder.
 #[derive(Clone)]
 pub struct SolutionRegistryConfig<C: Connection> {
+    /// Optional TTL for cached solutions.
     pub ttl: Option<Duration>,
+    /// Sweep interval for the background eviction task.
     pub sweep_interval: Duration,
+    /// Optional maximum number of cached solutions.
     pub max_entries: Option<usize>,
+    /// Builder used to create solution handles.
     pub build_handle: BuildHandleFn<C>,
 }
 
@@ -59,10 +65,14 @@ impl<C: Connection> SolutionRegistryConfig<C> {
     }
 }
 
+/// Errors produced by the solution registry.
 #[derive(Debug)]
 pub enum RegistryError {
+    /// Unknown solution name was requested.
     UnknownSolution(String),
+    /// Registry hit its configured capacity.
     CapacityReached { max: usize },
+    /// Failed to build a solution handle.
     BuildFailed(String),
 }
 
@@ -214,11 +224,13 @@ impl<C: Connection> SolutionRegistry<C> {
         Ok(handle.clone())
     }
 
+    /// Lists known solutions from the cache.
     pub async fn list_solutions(&self) -> Vec<String> {
         let map = self.inner.entries.read().await;
         map.keys().cloned().collect()
     }
 
+    /// Evicts idle entries that exceed the configured TTL.
     pub async fn evict_idle(&self) -> usize {
         let Some(ttl) = self.inner.config.ttl else {
             return 0;
@@ -231,6 +243,7 @@ impl<C: Connection> SolutionRegistry<C> {
     }
 
     #[must_use]
+    /// Spawns a background task to evict idle entries on a schedule.
     pub fn spawn_sweeper(self) -> Option<tokio::task::JoinHandle<()>>
     where
         C: Send + Sync + 'static,

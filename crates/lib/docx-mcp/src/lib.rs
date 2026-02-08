@@ -1,3 +1,8 @@
+//! MCP server implementation for docx-mcp.
+//!
+//! This crate wires the control plane into rmcp tool handlers and exposes the
+//! MCP-facing API surface for ingestion and query.
+
 mod helpers;
 mod tools;
 
@@ -16,6 +21,7 @@ use rmcp::{
 use rmcp::model::{CallToolResult, Content};
 use surrealdb::Connection;
 
+/// MCP server wrapper around the solution registry and tool routers.
 #[derive(Clone)]
 pub struct DocxMcp<C: Connection> {
     tool_router: ToolRouter<Self>,
@@ -23,11 +29,13 @@ pub struct DocxMcp<C: Connection> {
 }
 
 impl<C: Connection> DocxMcp<C> {
+    /// Creates a new server using a registry by value.
     #[must_use]
     pub fn new(registry: SolutionRegistry<C>) -> Self {
         Self::with_registry(Arc::new(registry))
     }
 
+    /// Creates a new server using a shared registry handle.
     #[must_use]
     pub fn with_registry(registry: Arc<SolutionRegistry<C>>) -> Self {
         let tool_router = Self::tool_router_core()
@@ -39,10 +47,12 @@ impl<C: Connection> DocxMcp<C> {
         }
     }
 
+    /// Lists known solution names in the registry.
     pub async fn solution_names(&self) -> Vec<String> {
         self.registry.list_solutions().await
     }
 
+    /// Retrieves the control plane for a solution, initializing it if needed.
     pub(crate) async fn control_for_solution(
         &self,
         solution: &str,

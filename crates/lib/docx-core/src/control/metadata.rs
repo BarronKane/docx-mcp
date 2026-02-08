@@ -8,6 +8,7 @@ use crate::store::StoreError;
 
 use super::{ControlError, DocxControlPlane};
 
+/// Input payload for upserting project metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectUpsertRequest {
     pub project_id: String,

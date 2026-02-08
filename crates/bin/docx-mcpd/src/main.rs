@@ -1,3 +1,8 @@
+//! Daemon entry point for the docx MCP server.
+//!
+//! Loads configuration from the environment, initializes the solution registry,
+//! and serves the MCP protocol over stdio.
+
 mod config;
 mod registry;
 

@@ -1,4 +1,8 @@
 [toolchain]
-channel = "stable"
+# We have to use nightly for rustdoc-json until it's stable.
+# cargo +nightly rustdoc -p <project> --<crate-type> -Z unstable-options --output-format json --document-private-items
+# $env:RUSTDOCFLAGS = "-Z unstable-options --output-format json"; cargo doc --workspace --no-deps --document-private-items
+# RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --workspace --no-deps --document-private-items
+channel = "nightly-2026-02-08"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

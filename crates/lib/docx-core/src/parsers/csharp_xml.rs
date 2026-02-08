@@ -14,6 +14,7 @@ use docx_store::models::{
 use docx_store::schema::{SOURCE_KIND_CSHARP_XML, make_csharp_symbol_key};
 use roxmltree::{Document, Node};
 
+/// Options for parsing C# XML documentation.
 #[derive(Debug, Clone)]
 pub struct CsharpParseOptions {
     pub project_id: String,
@@ -39,6 +40,7 @@ impl CsharpParseOptions {
     }
 }
 
+/// Output from parsing C# XML documentation.
 #[derive(Debug, Clone)]
 pub struct CsharpParseOutput {
     pub assembly_name: Option<String>,
@@ -46,6 +48,7 @@ pub struct CsharpParseOutput {
     pub doc_blocks: Vec<DocBlock>,
 }
 
+/// Error type for C# XML parse failures.
 #[derive(Debug)]
 pub struct CsharpParseError {
     message: String,
@@ -85,6 +88,7 @@ impl From<tokio::task::JoinError> for CsharpParseError {
     }
 }
 
+/// Parser for C# XML documentation files.
 pub struct CsharpXmlParser;
 
 impl CsharpXmlParser {

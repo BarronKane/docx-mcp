@@ -941,6 +941,7 @@ dependencies = [
  "docx-store",
  "roxmltree",
  "serde",
+ "serde_json",
  "surrealdb",
  "tokio",
 ]

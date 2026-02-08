@@ -20,6 +20,7 @@ use docx_store::schema::{
 use surrealdb::{Connection, Surreal};
 use surrealdb::sql::Regex;
 
+/// Errors returned by the `SurrealDB` store implementation.
 #[derive(Debug)]
 pub enum StoreError {
     Surreal(Box<surrealdb::Error>),
@@ -45,6 +46,7 @@ impl From<surrealdb::Error> for StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
+/// Store implementation backed by `SurrealDB`.
 pub struct SurrealDocStore<C: Connection> {
     db: Arc<Surreal<C>>,
 }
