@@ -5,6 +5,7 @@
 
 mod helpers;
 mod tools;
+pub mod server;
 
 use std::sync::Arc;
 
@@ -18,7 +19,7 @@ use rmcp::{
     tool_handler,
     tool_router,
 };
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use surrealdb::Connection;
 
 /// MCP server wrapper around the solution registry and tool routers.
@@ -40,7 +41,8 @@ impl<C: Connection> DocxMcp<C> {
     pub fn with_registry(registry: Arc<SolutionRegistry<C>>) -> Self {
         let tool_router = Self::tool_router_core()
             + Self::tool_router_metadata()
-            + Self::tool_router_data();
+            + Self::tool_router_data()
+            + Self::tool_router_context();
         Self {
             tool_router,
             registry,
@@ -92,4 +94,11 @@ impl<C: Connection> DocxMcp<C> {
 }
 
 #[tool_handler]
-impl<C: Connection> ServerHandler for DocxMcp<C> {}
+impl<C: Connection> ServerHandler for DocxMcp<C> {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            ..Default::default()
+        }
+    }
+}

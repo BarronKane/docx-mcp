@@ -1,24 +1,24 @@
 [package]
-name = "docx-mcp"
+name = "docx-ingest"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "MCP tools and helpers for docx-mcp."
+description = "HTTP ingest server for docx-mcp."
 readme = "../../../README.md"
-keywords = ["docx", "mcp", "tools"]
+keywords = ["docx", "ingest", "server"]
 categories = ["development-tools"]
 
 [dependencies]
+axum.workspace = true
 docx-core = { path = "../docx-core" }
-rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-surrealdb.workspace = true
-axum.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+surrealdb.workspace = true
 
 [lints]
 workspace = true

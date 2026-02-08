@@ -19,6 +19,7 @@ surrealdb.workspace = true
 docx-core = { path = "../../lib/docx-core" }
 docx-store = { path = "../../lib/docx-store" }
 docx-mcp = { path = "../../lib/docx-mcp" }
+docx-ingest = { path = "../../lib/docx-ingest" }
 
 [lints]
 workspace = true

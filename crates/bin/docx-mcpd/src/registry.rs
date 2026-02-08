@@ -8,31 +8,19 @@ use docx_core::services::{
     SolutionRegistryConfig,
 };
 use surrealdb::Surreal;
-use surrealdb::engine::remote::ws::{Client, Ws};
-use surrealdb::opt::auth::Root;
+use surrealdb::engine::local::{Db, Mem};
 
 use crate::config::DocxConfig;
 
-pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Client> {
+pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Db> {
     let config = config.clone();
     let build_config = config.clone();
-    let build: BuildHandleFn<Client> = Arc::new(move |solution: String| {
+    let build: BuildHandleFn<Db> = Arc::new(move |solution: String| {
         let config = build_config.clone();
         Box::pin(async move {
-            let db = Surreal::new::<Ws>(&config.db_endpoint)
+            let db = Surreal::new::<Mem>(())
                 .await
                 .map_err(map_build_error)?;
-
-            if let (Some(username), Some(password)) =
-                (config.db_username.as_ref(), config.db_password.as_ref())
-            {
-                db.signin(Root {
-                    username: username.as_str(),
-                    password: password.as_str(),
-                })
-                .await
-                .map_err(map_build_error)?;
-            }
 
             let db_name = DocxConfig::db_name_for_solution(&solution);
             db.use_ns(&config.db_namespace)

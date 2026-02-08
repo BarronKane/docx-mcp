@@ -7,3 +7,7 @@ Crates:
 - docx-mcp: MCP tools
 - docx-core: core types and helpers
 - docx-store: storage models and schema helpers
+
+Testing:
+
+`npx @modelcontextprotocol/inspector -- target\debug\docx-mcpd.exe`
