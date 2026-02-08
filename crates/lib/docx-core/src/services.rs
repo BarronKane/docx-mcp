@@ -261,13 +261,13 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use surrealdb::engine::local::Mem;
+    use surrealdb::engine::local::{Db, Mem};
 
     fn build_test_registry(
         calls: Arc<AtomicUsize>,
         ttl: Option<Duration>,
-    ) -> SolutionRegistry<Mem> {
-        let build = Arc::new(move |solution: String| {
+    ) -> SolutionRegistry<Db> {
+        let build: BuildHandleFn<Db> = Arc::new(move |solution: String| {
             let calls = calls.clone();
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::SeqCst);
