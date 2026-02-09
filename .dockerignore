@@ -1,0 +1,15 @@
+.ai/
+.junie/
+.idea/
+.vscode/
+target/
+tests/__pycache__/
+**/*.rs.bk
+**/*.log
+**/*.tmp
+**/node_modules/
+**/dist/
+**/build/
+Dockerfile
+compose.yaml
+**/.DS_Store

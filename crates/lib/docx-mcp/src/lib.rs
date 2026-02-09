@@ -25,7 +25,8 @@ use surrealdb::Connection;
 const SERVER_INSTRUCTIONS: &str = r"docx-mcp provides MCP tools for ingesting documentation and querying a metadata-rich graph.
 
 Workflow:
-1. Choose a `solution` name (tenant). If unsure, call `list_solutions`.
+1. Choose a `solution` name (tenant). If unsure, call `list_solutions`. If there is no solution
+    that matches the one your in (by root folder name or similar means), choose a new one to use.
 2. Ingest documentation into a `project_id` (project or crate) using:
    - `ingest_csharp_xml` for .NET XML documentation.
    - `ingest_rustdoc_json` for rustdoc JSON output.

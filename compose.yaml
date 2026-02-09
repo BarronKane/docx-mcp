@@ -1,0 +1,28 @@
+services:
+  docx-mcp:
+    build: .
+    image: docx-mcp:local
+    depends_on:
+      - surrealdb
+    environment:
+      DOCX_MCP_HTTP_ADDR: "[::]:4020"
+      DOCX_INGEST_ADDR: "[::]:4010"
+      DOCX_ENABLE_STDIO: "1"
+      DOCX_MCP_SERVE: "0"
+      DOCX_INGEST_SERVE: "0"
+      DOCX_DB_IN_MEMORY: "0"
+      DOCX_DB_URI: "ws://surrealdb:8000"
+      DOCX_DB_USERNAME: "root"
+      DOCX_DB_PASSWORD: "root"
+
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    command:
+      - start
+      - --bind
+      - 0.0.0.0:8000
+      - -u
+      - root
+      - -p
+      - root
+      - memory

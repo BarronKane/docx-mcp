@@ -12,6 +12,7 @@ keywords = ["docx", "mcp", "server"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+clap.workspace = true
 tokio.workspace = true
 rmcp.workspace = true
 surrealdb.workspace = true
