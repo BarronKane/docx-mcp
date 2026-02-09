@@ -49,6 +49,29 @@ When running locally you can add it to an mcp json:
 }
 ```
 
+Minimal SurrealDB compose file (fits the `mcp.json` entry above):
+
+```yaml
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    command:
+      - start
+      - --bind
+      - 0.0.0.0:8000
+      - -u
+      - root
+      - -p
+      - root
+      - memory
+```
+
+Start it with:
+
+```bash
+docker compose -f surrealdb.compose.yaml up -d
+```
+
 Notes:
 - JetBrains HTTP MCP is currently unreliable with `docx-mcp` (streamable HTTP handshake/session requirements). Use stdio via `docker run` as shown above.
 - If you use compose, the default network is usually `<folder>_default` (for this repo: `docx-mcp_default`).
