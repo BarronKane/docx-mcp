@@ -15,7 +15,7 @@ categories = ["development-tools"]
 crate-type = ["rlib"]
 
 [dependencies]
-docx-core = { path = "../docx-core" }
+docx-core = { path = "../docx-core", version = "0.1.0" }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true

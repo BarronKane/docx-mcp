@@ -17,10 +17,10 @@ tokio.workspace = true
 rmcp.workspace = true
 surrealdb.workspace = true
 
-docx-core = { path = "../../lib/docx-core" }
-docx-store = { path = "../../lib/docx-store" }
-docx-mcp = { path = "../../lib/docx-mcp" }
-docx-ingest = { path = "../../lib/docx-ingest" }
+docx-core = { path = "../../lib/docx-core", version = "0.1.0" }
+docx-store = { path = "../../lib/docx-store", version = "0.1.0" }
+docx-mcp = { path = "../../lib/docx-mcp", version = "0.1.0" }
+docx-ingest = { path = "../../lib/docx-ingest", version = "0.1.0" }
 
 [lints]
 workspace = true

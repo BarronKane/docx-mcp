@@ -15,7 +15,7 @@ categories = ["development-tools"]
 crate-type = ["rlib"]
 
 [dependencies]
-docx-store = { path = "../docx-store" }
+docx-store = { path = "../docx-store", version = "0.1.0" }
 roxmltree = "0.20"
 serde.workspace = true
 serde_json.workspace = true
