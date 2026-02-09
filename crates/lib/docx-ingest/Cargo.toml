@@ -11,6 +11,9 @@ readme = "../../../README.md"
 keywords = ["docx", "ingest", "server"]
 categories = ["development-tools"]
 
+[lib]
+crate-type = ["rlib"]
+
 [dependencies]
 axum.workspace = true
 docx-core = { path = "../docx-core" }

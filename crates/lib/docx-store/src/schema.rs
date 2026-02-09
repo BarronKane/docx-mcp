@@ -22,6 +22,12 @@ pub const SOURCE_KIND_CSHARP_XML: &str = "csharp_xml";
 pub const SOURCE_KIND_RUSTDOC_JSON: &str = "rustdoc_json";
 pub const SOURCE_KIND_DOXYGEN_XML: &str = "doxygen_xml";
 
+/// Formats a `SurrealDB` record id string for the given table and id.
+#[must_use]
+pub fn make_record_id(table: &str, id: &str) -> String {
+    format!("{table}:{id}")
+}
+
 #[must_use]
 pub fn make_symbol_key(language: &str, project_id: &str, local_id: &str) -> String {
     format!("{language}|{project_id}|{local_id}")

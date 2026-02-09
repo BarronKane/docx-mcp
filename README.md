@@ -11,3 +11,16 @@ Crates:
 Testing:
 
 `npx @modelcontextprotocol/inspector -- target\debug\docx-mcpd.exe`
+
+When running locally you can add it to an mcp json:
+
+```json
+{
+  "mcpServers": {
+    "docx-mcp": {
+      "url": "http://127.0.0.1:4020/mcp",
+      "type": "streamableHttp"
+    }
+  }
+}
+```

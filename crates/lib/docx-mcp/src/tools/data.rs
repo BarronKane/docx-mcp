@@ -11,12 +11,14 @@ use surrealdb::Connection;
 
 use crate::{DocxMcp, helpers};
 
+/// Parameters for listing symbol kinds in a project.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ListSymbolTypesParams {
     pub solution: String,
     pub project_id: String,
 }
 
+/// Parameters for listing members in a qualified scope.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GetMembersParams {
     pub solution: String,
@@ -25,6 +27,7 @@ pub struct GetMembersParams {
     pub limit: Option<usize>,
 }
 
+/// Parameters for fetching a symbol by key.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GetSymbolParams {
     pub solution: String,
@@ -32,6 +35,7 @@ pub struct GetSymbolParams {
     pub symbol_key: String,
 }
 
+/// Parameters for listing documentation blocks for a symbol.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ListDocBlocksParams {
     pub solution: String,
@@ -40,6 +44,16 @@ pub struct ListDocBlocksParams {
     pub ingest_id: Option<String>,
 }
 
+/// Parameters for fetching adjacency and relations for a symbol.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GetSymbolAdjacencyParams {
+    pub solution: String,
+    pub project_id: String,
+    pub symbol_key: String,
+    pub limit: Option<usize>,
+}
+
+/// Parameters for searching symbols by name.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchSymbolsParams {
     pub solution: String,
@@ -48,6 +62,7 @@ pub struct SearchSymbolsParams {
     pub limit: Option<usize>,
 }
 
+/// Parameters for searching documentation blocks by text.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchDocBlocksParams {
     pub solution: String,
@@ -113,6 +128,20 @@ impl<C: Connection> DocxMcp<C> {
             .await
             .map_err(helpers::map_err)?;
         Ok(CallToolResult::success(vec![Content::json(blocks)?]))
+    }
+
+    #[tool(description = "Fetch a symbol with doc metadata, relation edges, and related symbols.")]
+    async fn get_symbol_adjacency(
+        &self,
+        Parameters(params): Parameters<GetSymbolAdjacencyParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let limit = params.limit.unwrap_or(200);
+        let control = self.control_for_solution(&params.solution).await?;
+        let adjacency = control
+            .get_symbol_adjacency(&params.project_id, &params.symbol_key, limit)
+            .await
+            .map_err(helpers::map_err)?;
+        Ok(CallToolResult::success(vec![Content::json(adjacency)?]))
     }
 
     #[tool(description = "Search symbols by name fragment.")]

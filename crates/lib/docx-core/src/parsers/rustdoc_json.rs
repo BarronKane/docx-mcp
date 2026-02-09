@@ -10,6 +10,7 @@ use docx_store::models::{
     DocSection,
     DocTypeParam,
     Param,
+    SeeAlso,
     SourceId,
     Symbol,
     TypeParam,
@@ -597,7 +598,7 @@ fn build_doc_block(
         safety: parsed_docs.safety,
         panics: parsed_docs.panics,
         errors: parsed_docs.errors,
-        see_also: Vec::new(),
+        see_also: parsed_docs.see_also,
         deprecated: parsed_docs.deprecated,
         inherit_doc: None,
         sections: parsed_docs.sections,
@@ -621,6 +622,7 @@ struct ParsedDocs {
     examples: Vec<DocExample>,
     notes: Vec<String>,
     warnings: Vec<String>,
+    see_also: Vec<SeeAlso>,
     sections: Vec<DocSection>,
 }
 
@@ -1096,6 +1098,7 @@ fn parse_markdown_docs(raw: &str) -> ParsedDocs {
         examples: Vec::new(),
         notes: Vec::new(),
         warnings: Vec::new(),
+        see_also: Vec::new(),
         sections: Vec::new(),
     };
 
@@ -1115,6 +1118,9 @@ fn parse_markdown_docs(raw: &str) -> ParsedDocs {
             "examples" | "example" => parsed.examples = extract_examples(trimmed_body),
             "notes" | "note" => parsed.notes.push(trimmed_body.to_string()),
             "warnings" | "warning" => parsed.warnings.push(trimmed_body.to_string()),
+            "see also" | "seealso" | "see-also" => {
+                parsed.see_also = parse_see_also_section(trimmed_body);
+            }
             "arguments" | "args" | "parameters" | "params" => {
                 parsed.params = parse_param_section(trimmed_body);
             }
@@ -1129,6 +1135,62 @@ fn parse_markdown_docs(raw: &str) -> ParsedDocs {
     }
 
     parsed
+}
+
+fn parse_see_also_section(body: &str) -> Vec<SeeAlso> {
+    let mut entries = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let item = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .unwrap_or(trimmed);
+        if let Some(see) = parse_see_also_line(item) {
+            entries.push(see);
+        }
+    }
+    if entries.is_empty()
+        && let Some(see) = parse_see_also_line(body.trim())
+    {
+        entries.push(see);
+    }
+    entries
+}
+
+fn parse_see_also_line(text: &str) -> Option<SeeAlso> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((label, target)) = parse_markdown_link(trimmed) {
+        return Some(SeeAlso {
+            label: Some(label),
+            target,
+            target_kind: Some("markdown".to_string()),
+        });
+    }
+    Some(SeeAlso {
+        label: None,
+        target: trimmed.to_string(),
+        target_kind: Some("text".to_string()),
+    })
+}
+
+fn parse_markdown_link(text: &str) -> Option<(String, String)> {
+    let start = text.find('[')?;
+    let remainder = &text[start + 1..];
+    let mid = remainder.find("](")?;
+    let label = remainder[..mid].trim();
+    let tail = &remainder[mid + 2..];
+    let end = tail.find(')')?;
+    let target = tail[..end].trim();
+    if label.is_empty() || target.is_empty() {
+        return None;
+    }
+    Some((label.to_string(), target.to_string()))
 }
 
 fn split_sections(doc: &str) -> (String, Vec<(String, String)>) {
@@ -1309,4 +1371,21 @@ fn split_param_item(item: &str) -> Option<(String, Option<String>)> {
     }
     let description = description.map(|rest| rest.trim().to_string()).filter(|s| !s.is_empty());
     Some((name.to_string(), description))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_markdown_docs;
+
+    #[test]
+    fn parse_markdown_docs_extracts_see_also() {
+        let docs = "Summary.\n\n# See Also\n- [Foo](crate::Foo)\n- Bar";
+        let parsed = parse_markdown_docs(docs);
+
+        assert_eq!(parsed.see_also.len(), 2);
+        assert_eq!(parsed.see_also[0].label.as_deref(), Some("Foo"));
+        assert_eq!(parsed.see_also[0].target, "crate::Foo");
+        assert_eq!(parsed.see_also[1].label.as_deref(), None);
+        assert_eq!(parsed.see_also[1].target, "Bar");
+    }
 }

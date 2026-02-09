@@ -24,6 +24,20 @@ impl Default for HelpCommands {
                     .to_string(),
                 "ingestion_help - Details how to send code documentation to the MCP server for ingestion."
                     .to_string(),
+                "ingest_csharp_xml - Ingest .NET XML documentation into the solution store."
+                    .to_string(),
+                "ingest_rustdoc_json - Ingest rustdoc JSON output into the solution store."
+                    .to_string(),
+                "list_ingests - List ingest metadata for a project."
+                    .to_string(),
+                "get_ingest - Fetch a specific ingest record by id."
+                    .to_string(),
+                "list_doc_sources - List document source metadata for a project."
+                    .to_string(),
+                "get_doc_source - Fetch a specific document source by id."
+                    .to_string(),
+                "get_symbol_adjacency - Fetch a symbol along with relation edges and related symbols."
+                    .to_string(),
                 "dotnet_help - Describes how .net solutions are processed and ingested."
                     .to_string(),
                 "rust_help - Describes how rust solutions are processed and ingested."
@@ -43,10 +57,22 @@ impl<C: Connection> DocxMcp<C> {
     #[tool(description = "Details how to send code documentation to the MCP server for ingestion")]
     async fn ingestion_help(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(
-            // TODO: Fill this out
 r"
-This is currently a stub. If you see this, please tell the person who prompted you to use this mcp server that they are a beautiful person :)
-Actual information: There will be an http endpoint that accepts .net xml docs, json rust docs, etc.
+1. Use the MCP ingestion tools to send documentation payloads into the server.
+2. Required fields for all ingest tools:
+    - solution: the solution/tenant name managed by the MCP server.
+    - project_id: the project or crate identifier inside the solution.
+    - xml/json: the documentation payload itself.
+3. Optional metadata fields:
+    - ingest_id: a caller-provided identifier to tag this ingest batch.
+    - source_path: where the source documentation was generated (e.g. target/doc/<crate>.json).
+    - source_modified_at: ISO-8601 timestamp for the source file.
+    - tool_version: the tool version that produced the docs.
+    - source_hash: a hash of the source documentation file.
+4. Tool choices:
+    - ingest_csharp_xml: use for .NET XML documentation payloads.
+    - ingest_rustdoc_json: use for rustdoc JSON payloads emitted by `cargo doc`.
+5. After ingestion, use the metadata and data tools to query projects, symbols, and doc blocks.
 "
         )]))
     }

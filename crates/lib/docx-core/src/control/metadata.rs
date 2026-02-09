@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use docx_store::models::Project;
+use docx_store::models::{DocSource, Ingest, Project};
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
 
@@ -92,12 +92,59 @@ impl<C: Connection> DocxControlPlane<C> {
         Ok(self.store.get_project(project_id).await?)
     }
 
+    /// Fetches an ingest record by id.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
+    pub async fn get_ingest(&self, ingest_id: &str) -> Result<Option<Ingest>, ControlError> {
+        Ok(self.store.get_ingest(ingest_id).await?)
+    }
+
+    /// Fetches a document source by id.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
+    pub async fn get_doc_source(
+        &self,
+        doc_source_id: &str,
+    ) -> Result<Option<DocSource>, ControlError> {
+        Ok(self.store.get_doc_source(doc_source_id).await?)
+    }
+
     /// Lists projects with an optional limit.
     ///
     /// # Errors
     /// Returns `ControlError` if the store query fails.
     pub async fn list_projects(&self, limit: usize) -> Result<Vec<Project>, ControlError> {
         Ok(self.store.list_projects(limit).await?)
+    }
+
+    /// Lists ingests for a project.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
+    pub async fn list_ingests(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Ingest>, ControlError> {
+        Ok(self.store.list_ingests(project_id, limit).await?)
+    }
+
+    /// Lists document sources for a project, optionally filtered by ingest id.
+    ///
+    /// # Errors
+    /// Returns `ControlError` if the store query fails.
+    pub async fn list_doc_sources(
+        &self,
+        project_id: &str,
+        ingest_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DocSource>, ControlError> {
+        Ok(self
+            .store
+            .list_doc_sources_by_project(project_id, ingest_id, limit)
+            .await?)
     }
 
     /// Searches projects by a name or alias pattern.

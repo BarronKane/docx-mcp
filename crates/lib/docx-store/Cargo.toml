@@ -11,6 +11,9 @@ readme = "../../../README.md"
 keywords = ["docx", "mcp", "database"]
 categories = ["database", "development-tools"]
 
+[lib]
+crate-type = ["rlib"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

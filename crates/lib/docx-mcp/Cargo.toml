@@ -11,6 +11,9 @@ readme = "../../../README.md"
 keywords = ["docx", "mcp", "tools"]
 categories = ["development-tools"]
 
+[lib]
+crate-type = ["rlib"]
+
 [dependencies]
 docx-core = { path = "../docx-core" }
 rmcp.workspace = true

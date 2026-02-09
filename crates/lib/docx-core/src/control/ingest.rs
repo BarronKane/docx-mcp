@@ -1,7 +1,23 @@
 use std::collections::HashMap;
 
 use docx_store::models::{DocBlock, DocSource, RelationRecord, Symbol};
-use docx_store::schema::{REL_DOCUMENTS, SOURCE_KIND_CSHARP_XML, SOURCE_KIND_RUSTDOC_JSON};
+use docx_store::schema::{
+    REL_CONTAINS,
+    REL_DOCUMENTS,
+    REL_INHERITS,
+    REL_MEMBER_OF,
+    REL_PARAM_TYPE,
+    REL_REFERENCES,
+    REL_RETURNS,
+    REL_SEE_ALSO,
+    SOURCE_KIND_CSHARP_XML,
+    SOURCE_KIND_RUSTDOC_JSON,
+    TABLE_DOC_BLOCK,
+    TABLE_SYMBOL,
+    make_csharp_symbol_key,
+    make_record_id,
+    make_symbol_key,
+};
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
 
@@ -100,46 +116,23 @@ impl<C: Connection> DocxControlPlane<C> {
                 .await?;
         }
 
-        let mut stored_symbols = Vec::with_capacity(parsed.symbols.len());
-        for symbol in parsed.symbols {
-            stored_symbols.push(self.store.upsert_symbol(symbol).await?);
-        }
-
+        let stored_symbols = self.store_symbols(parsed.symbols).await?;
         let stored_blocks = self.store.create_doc_blocks(parsed.doc_blocks).await?;
-
-        let doc_source_id = if source_path.is_some()
-            || tool_version.is_some()
-            || source_hash.is_some()
-            || source_modified_at.is_some()
-        {
-            let source = DocSource {
-                id: None,
+        let doc_source_id = self
+            .create_doc_source_if_needed(DocSourceInput {
                 project_id: project_id.clone(),
                 ingest_id: ingest_id.clone(),
-                language: Some("csharp".to_string()),
-                source_kind: Some(SOURCE_KIND_CSHARP_XML.to_string()),
-                path: source_path,
+                language: "csharp".to_string(),
+                source_kind: SOURCE_KIND_CSHARP_XML.to_string(),
+                source_path,
                 tool_version,
-                hash: source_hash,
+                source_hash,
                 source_modified_at,
-                extra: None,
-            };
-            let created = self.store.create_doc_source(source).await?;
-            created.id
-        } else {
-            None
-        };
-
-        let documents = build_documents_edges(
-            &stored_symbols,
-            &stored_blocks,
-            &project_id,
-            ingest_id.as_deref(),
-        );
-        let documents_edge_count = documents.len();
-        if !documents.is_empty() {
-            let _ = self.store.create_relations(REL_DOCUMENTS, documents).await?;
-        }
+            })
+            .await?;
+        let documents_edge_count = self
+            .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
+            .await?;
 
         Ok(CsharpIngestReport {
             assembly_name: parsed.assembly_name,
@@ -194,46 +187,23 @@ impl<C: Connection> DocxControlPlane<C> {
                 .await?;
         }
 
-        let mut stored_symbols = Vec::with_capacity(parsed.symbols.len());
-        for symbol in parsed.symbols {
-            stored_symbols.push(self.store.upsert_symbol(symbol).await?);
-        }
-
+        let stored_symbols = self.store_symbols(parsed.symbols).await?;
         let stored_blocks = self.store.create_doc_blocks(parsed.doc_blocks).await?;
-
-        let doc_source_id = if source_path.is_some()
-            || tool_version.is_some()
-            || source_hash.is_some()
-            || source_modified_at.is_some()
-        {
-            let source = DocSource {
-                id: None,
+        let doc_source_id = self
+            .create_doc_source_if_needed(DocSourceInput {
                 project_id: project_id.clone(),
                 ingest_id: ingest_id.clone(),
-                language: Some("rust".to_string()),
-                source_kind: Some(SOURCE_KIND_RUSTDOC_JSON.to_string()),
-                path: source_path,
+                language: "rust".to_string(),
+                source_kind: SOURCE_KIND_RUSTDOC_JSON.to_string(),
+                source_path,
                 tool_version,
-                hash: source_hash,
+                source_hash,
                 source_modified_at,
-                extra: None,
-            };
-            let created = self.store.create_doc_source(source).await?;
-            created.id
-        } else {
-            None
-        };
-
-        let documents = build_documents_edges(
-            &stored_symbols,
-            &stored_blocks,
-            &project_id,
-            ingest_id.as_deref(),
-        );
-        let documents_edge_count = documents.len();
-        if !documents.is_empty() {
-            let _ = self.store.create_relations(REL_DOCUMENTS, documents).await?;
-        }
+            })
+            .await?;
+        let documents_edge_count = self
+            .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
+            .await?;
 
         Ok(RustdocIngestReport {
             crate_name: parsed.crate_name,
@@ -243,8 +213,96 @@ impl<C: Connection> DocxControlPlane<C> {
             doc_source_id,
         })
     }
+
+    async fn store_symbols(&self, symbols: Vec<Symbol>) -> Result<Vec<Symbol>, ControlError> {
+        let mut stored = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            stored.push(self.store.upsert_symbol(symbol).await?);
+        }
+        Ok(stored)
+    }
+
+    async fn create_doc_source_if_needed(
+        &self,
+        input: DocSourceInput,
+    ) -> Result<Option<String>, ControlError> {
+        let has_source = input.source_path.is_some()
+            || input.tool_version.is_some()
+            || input.source_hash.is_some()
+            || input.source_modified_at.is_some();
+        if !has_source {
+            return Ok(None);
+        }
+
+        let source = DocSource {
+            id: None,
+            project_id: input.project_id,
+            ingest_id: input.ingest_id,
+            language: Some(input.language),
+            source_kind: Some(input.source_kind),
+            path: input.source_path,
+            tool_version: input.tool_version,
+            hash: input.source_hash,
+            source_modified_at: input.source_modified_at,
+            extra: None,
+        };
+        let created = self.store.create_doc_source(source).await?;
+        Ok(created.id)
+    }
+
+    async fn persist_relations(
+        &self,
+        stored_symbols: &[Symbol],
+        stored_blocks: &[DocBlock],
+        project_id: &str,
+        ingest_id: Option<&str>,
+    ) -> Result<usize, ControlError> {
+        let documents = build_documents_edges(stored_symbols, stored_blocks, project_id, ingest_id);
+        let documents_edge_count = documents.len();
+        if !documents.is_empty() {
+            let _ = self.store.create_relations(REL_DOCUMENTS, documents).await?;
+        }
+
+        let relations = build_symbol_relations(stored_symbols, project_id, ingest_id);
+        if !relations.is_empty() {
+            let _ = self.store.create_relations(REL_MEMBER_OF, relations.member_of).await?;
+            let _ = self.store.create_relations(REL_CONTAINS, relations.contains).await?;
+            let _ = self.store.create_relations(REL_RETURNS, relations.returns).await?;
+            let _ = self.store.create_relations(REL_PARAM_TYPE, relations.param_types).await?;
+        }
+
+        let doc_relations = build_doc_block_relations(stored_symbols, stored_blocks, project_id, ingest_id);
+        if !doc_relations.is_empty() {
+            let _ = self
+                .store
+                .create_relations(REL_SEE_ALSO, doc_relations.see_also)
+                .await?;
+            let _ = self
+                .store
+                .create_relations(REL_INHERITS, doc_relations.inherits)
+                .await?;
+            let _ = self
+                .store
+                .create_relations(REL_REFERENCES, doc_relations.references)
+                .await?;
+        }
+
+        Ok(documents_edge_count)
+    }
 }
 
+struct DocSourceInput {
+    project_id: String,
+    ingest_id: Option<String>,
+    language: String,
+    source_kind: String,
+    source_path: Option<String>,
+    tool_version: Option<String>,
+    source_hash: Option<String>,
+    source_modified_at: Option<String>,
+}
+
+/// Builds `documents` relation edges between doc blocks and symbols.
 fn build_documents_edges(
     symbols: &[Symbol],
     blocks: &[DocBlock],
@@ -254,7 +312,8 @@ fn build_documents_edges(
     let mut symbol_map = HashMap::new();
     for symbol in symbols {
         if let Some(id) = symbol.id.as_ref() {
-            symbol_map.insert(symbol.symbol_key.as_str(), id.clone());
+            let record_id = make_record_id(TABLE_SYMBOL, id);
+            symbol_map.insert(symbol.symbol_key.as_str(), record_id);
         }
     }
 
@@ -269,9 +328,10 @@ fn build_documents_edges(
         let Some(symbol_id) = symbol_map.get(symbol_key.as_str()) else {
             continue;
         };
+        let block_record_id = make_record_id(TABLE_DOC_BLOCK, block_id);
         relations.push(RelationRecord {
             id: None,
-            in_id: block_id.clone(),
+            in_id: block_record_id,
             out_id: symbol_id.clone(),
             project_id: project_id.to_string(),
             ingest_id: ingest_id.map(str::to_string),
@@ -280,4 +340,356 @@ fn build_documents_edges(
         });
     }
     relations
+}
+
+/// Bundles relation edges derived from symbol metadata.
+#[derive(Default)]
+struct SymbolRelations {
+    member_of: Vec<RelationRecord>,
+    contains: Vec<RelationRecord>,
+    returns: Vec<RelationRecord>,
+    param_types: Vec<RelationRecord>,
+}
+
+impl SymbolRelations {
+    /// Returns true when all relation collections are empty.
+    const fn is_empty(&self) -> bool {
+        self.member_of.is_empty()
+            && self.contains.is_empty()
+            && self.returns.is_empty()
+            && self.param_types.is_empty()
+    }
+}
+
+/// Builds relation edges for symbol membership, containment, and type references.
+fn build_symbol_relations(
+    symbols: &[Symbol],
+    project_id: &str,
+    ingest_id: Option<&str>,
+) -> SymbolRelations {
+    let mut relations = SymbolRelations::default();
+    let mut symbol_by_qualified = HashMap::new();
+    let mut symbol_by_key = HashMap::new();
+
+    for symbol in symbols {
+        if let (Some(id), Some(qualified_name)) = (symbol.id.as_ref(), symbol.qualified_name.as_ref()) {
+            symbol_by_qualified.insert(qualified_name.as_str(), id.as_str());
+        }
+        if let Some(id) = symbol.id.as_ref() {
+            symbol_by_key.insert(symbol.symbol_key.as_str(), id.as_str());
+        }
+    }
+
+    for symbol in symbols {
+        let Some(symbol_id) = symbol.id.as_ref() else {
+            continue;
+        };
+        let symbol_record = make_record_id(TABLE_SYMBOL, symbol_id);
+        let ingest_id = ingest_id.map(str::to_string);
+
+        if let Some(parent) = symbol
+            .qualified_name
+            .as_ref()
+            .and_then(|qualified| qualified.rsplit_once("::").map(|pair| pair.0.to_string()))
+            .and_then(|parent| symbol_by_qualified.get(parent.as_str()).copied())
+        {
+            let parent_record = make_record_id(TABLE_SYMBOL, parent);
+            relations.member_of.push(RelationRecord {
+                id: None,
+                in_id: symbol_record.clone(),
+                out_id: parent_record.clone(),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.clone(),
+                kind: None,
+                extra: None,
+            });
+            relations.contains.push(RelationRecord {
+                id: None,
+                in_id: parent_record,
+                out_id: symbol_record.clone(),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.clone(),
+                kind: None,
+                extra: None,
+            });
+        }
+
+        if let Some(return_key) = symbol
+            .return_type
+            .as_ref()
+            .and_then(|ty| ty.symbol_key.as_ref())
+            .and_then(|key| symbol_by_key.get(key.as_str()).copied())
+        {
+            relations.returns.push(RelationRecord {
+                id: None,
+                in_id: symbol_record.clone(),
+                out_id: make_record_id(TABLE_SYMBOL, return_key),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.clone(),
+                kind: None,
+                extra: None,
+            });
+        }
+
+        for param in &symbol.params {
+            let Some(param_key) = param
+                .type_ref
+                .as_ref()
+                .and_then(|ty| ty.symbol_key.as_ref())
+                .and_then(|key| symbol_by_key.get(key.as_str()).copied())
+            else {
+                continue;
+            };
+            relations.param_types.push(RelationRecord {
+                id: None,
+                in_id: symbol_record.clone(),
+                out_id: make_record_id(TABLE_SYMBOL, param_key),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.clone(),
+                kind: Some(param.name.clone()),
+                extra: None,
+            });
+        }
+    }
+
+    relations
+}
+
+/// Bundles relation edges derived from documentation metadata.
+#[derive(Default)]
+struct DocBlockRelations {
+    see_also: Vec<RelationRecord>,
+    inherits: Vec<RelationRecord>,
+    references: Vec<RelationRecord>,
+}
+
+impl DocBlockRelations {
+    /// Returns true when all relation collections are empty.
+    const fn is_empty(&self) -> bool {
+        self.see_also.is_empty() && self.inherits.is_empty() && self.references.is_empty()
+    }
+}
+
+/// Builds relation edges for `see also`, inheritance, and reference metadata on doc blocks.
+fn build_doc_block_relations(
+    symbols: &[Symbol],
+    blocks: &[DocBlock],
+    project_id: &str,
+    ingest_id: Option<&str>,
+) -> DocBlockRelations {
+    let mut relations = DocBlockRelations::default();
+    let mut symbol_by_key = HashMap::new();
+    for symbol in symbols {
+        if let Some(id) = symbol.id.as_ref() {
+            symbol_by_key.insert(symbol.symbol_key.as_str(), id.as_str());
+        }
+    }
+
+    for block in blocks {
+        let Some(symbol_key) = block.symbol_key.as_ref() else {
+            continue;
+        };
+        let Some(symbol_id) = symbol_by_key.get(symbol_key.as_str()).copied() else {
+            continue;
+        };
+        let symbol_record = make_record_id(TABLE_SYMBOL, symbol_id);
+        let ingest_id = ingest_id.map(str::to_string);
+        let language = block.language.as_deref();
+
+        for link in &block.see_also {
+            if let Some(target_id) = resolve_symbol_reference(
+                &link.target,
+                language,
+                project_id,
+                &symbol_by_key,
+            ) {
+                relations.see_also.push(RelationRecord {
+                    id: None,
+                    in_id: symbol_record.clone(),
+                    out_id: make_record_id(TABLE_SYMBOL, target_id),
+                    project_id: project_id.to_string(),
+                    ingest_id: ingest_id.clone(),
+                    kind: link.target_kind.clone(),
+                    extra: None,
+                });
+            }
+        }
+
+        if let Some(inherit) = block.inherit_doc.as_ref() {
+            let target = inherit.cref.as_deref().or(inherit.path.as_deref());
+            if let Some(target) = target
+                && let Some(target_id) =
+                    resolve_symbol_reference(target, language, project_id, &symbol_by_key)
+            {
+                relations.inherits.push(RelationRecord {
+                    id: None,
+                    in_id: symbol_record.clone(),
+                    out_id: make_record_id(TABLE_SYMBOL, target_id),
+                    project_id: project_id.to_string(),
+                    ingest_id: ingest_id.clone(),
+                    kind: Some("inheritdoc".to_string()),
+                    extra: None,
+                });
+            }
+        }
+
+        for exception in &block.exceptions {
+            let Some(target_id) = exception
+                .type_ref
+                .as_ref()
+                .and_then(|ty| ty.symbol_key.as_ref())
+                .and_then(|key| symbol_by_key.get(key.as_str()).copied())
+            else {
+                continue;
+            };
+            relations.references.push(RelationRecord {
+                id: None,
+                in_id: symbol_record.clone(),
+                out_id: make_record_id(TABLE_SYMBOL, target_id),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.clone(),
+                kind: Some("exception".to_string()),
+                extra: None,
+            });
+        }
+    }
+
+    relations
+}
+
+fn resolve_symbol_reference<'a>(
+    target: &str,
+    language: Option<&str>,
+    project_id: &str,
+    symbol_by_key: &'a HashMap<&'a str, &'a str>,
+) -> Option<&'a str> {
+    if let Some(id) = symbol_by_key.get(target).copied() {
+        return Some(id);
+    }
+    match language {
+        Some("csharp") => {
+            let key = make_csharp_symbol_key(project_id, target);
+            symbol_by_key.get(key.as_str()).copied()
+        }
+        Some("rust") => {
+            let key = make_symbol_key("rust", project_id, target);
+            symbol_by_key.get(key.as_str()).copied()
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use docx_store::models::{DocException, DocInherit, SeeAlso, TypeRef};
+
+    fn build_symbol(project_id: &str, id: &str, key: &str) -> Symbol {
+        Symbol {
+            id: Some(id.to_string()),
+            project_id: project_id.to_string(),
+            language: Some("csharp".to_string()),
+            symbol_key: key.to_string(),
+            kind: None,
+            name: None,
+            qualified_name: None,
+            display_name: None,
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            is_static: None,
+            is_async: None,
+            is_const: None,
+            is_deprecated: None,
+            since: None,
+            stability: None,
+            source_path: None,
+            line: None,
+            col: None,
+            return_type: None,
+            params: Vec::new(),
+            type_params: Vec::new(),
+            attributes: Vec::new(),
+            source_ids: Vec::new(),
+            doc_summary: None,
+            extra: None,
+        }
+    }
+
+    fn build_doc_block(project_id: &str, symbol_key: &str) -> DocBlock {
+        DocBlock {
+            id: Some("block-1".to_string()),
+            project_id: project_id.to_string(),
+            ingest_id: None,
+            symbol_key: Some(symbol_key.to_string()),
+            language: Some("csharp".to_string()),
+            source_kind: Some(SOURCE_KIND_CSHARP_XML.to_string()),
+            doc_hash: None,
+            summary: None,
+            remarks: None,
+            returns: None,
+            value: None,
+            params: Vec::new(),
+            type_params: Vec::new(),
+            exceptions: Vec::new(),
+            examples: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+            safety: None,
+            panics: None,
+            errors: None,
+            see_also: Vec::new(),
+            deprecated: None,
+            inherit_doc: None,
+            sections: Vec::new(),
+            raw: None,
+            extra: None,
+        }
+    }
+
+    #[test]
+    fn build_doc_block_relations_extracts_csharp_references() {
+        let project_id = "docx";
+        let foo_key = make_csharp_symbol_key(project_id, "T:Foo");
+        let bar_key = make_csharp_symbol_key(project_id, "T:Bar");
+
+        let symbols = vec![
+            build_symbol(project_id, "foo", &foo_key),
+            build_symbol(project_id, "bar", &bar_key),
+        ];
+
+        let mut block = build_doc_block(project_id, &foo_key);
+        block.see_also.push(SeeAlso {
+            label: Some("Bar".to_string()),
+            target: "T:Bar".to_string(),
+            target_kind: Some("cref".to_string()),
+        });
+        block.inherit_doc = Some(DocInherit {
+            cref: Some("T:Bar".to_string()),
+            path: None,
+        });
+        block.exceptions.push(DocException {
+            type_ref: Some(TypeRef {
+                display: Some("Bar".to_string()),
+                canonical: Some("Bar".to_string()),
+                language: Some("csharp".to_string()),
+                symbol_key: Some(bar_key),
+                generics: Vec::new(),
+                modifiers: Vec::new(),
+            }),
+            description: None,
+        });
+
+        let relations = build_doc_block_relations(&symbols, &[block], project_id, None);
+
+        assert_eq!(relations.see_also.len(), 1);
+        assert_eq!(relations.inherits.len(), 1);
+        assert_eq!(relations.references.len(), 1);
+
+        let target_record = make_record_id(TABLE_SYMBOL, "bar");
+        assert_eq!(relations.see_also[0].out_id, target_record);
+        assert_eq!(relations.see_also[0].kind.as_deref(), Some("cref"));
+        assert_eq!(relations.inherits[0].kind.as_deref(), Some("inheritdoc"));
+        assert_eq!(relations.references[0].kind.as_deref(), Some("exception"));
+    }
 }

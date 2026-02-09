@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::routing::get;
 use docx_core::services::SolutionRegistry;
 use rmcp::serve_server;
 use rmcp::transport::io::stdio;
@@ -100,7 +101,9 @@ where
             },
         );
 
-    let app = Router::new().nest_service("/mcp", service);
+    let app = Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

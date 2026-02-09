@@ -22,6 +22,27 @@ use rmcp::{
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use surrealdb::Connection;
 
+const SERVER_INSTRUCTIONS: &str = r"docx-mcp provides MCP tools for ingesting documentation and querying a metadata-rich graph.
+
+Workflow:
+1. Choose a `solution` name (tenant). If unsure, call `list_solutions`.
+2. Ingest documentation into a `project_id` (project or crate) using:
+   - `ingest_csharp_xml` for .NET XML documentation.
+   - `ingest_rustdoc_json` for rustdoc JSON output.
+   Include optional metadata: `ingest_id`, `source_path`, `source_modified_at`, `tool_version`, `source_hash`.
+3. Query metadata:
+   - `list_projects`, `search_projects`, `list_ingests`, `get_ingest`, `list_doc_sources`, `get_doc_source`.
+4. Query symbols and docs:
+   - `list_symbol_types`, `search_symbols`, `get_symbol`, `list_doc_blocks`, `search_doc_blocks`.
+   - `get_symbol_adjacency` returns symbols, doc blocks, doc sources, and relation edges.
+
+Notes:
+- `symbol_key` format is `{language}|{project_id}|{qualified_name}` for rustdoc data.
+- Symbol metadata includes source file paths, line/column, signatures, params, and return types when available.
+- Relation edges include `member_of`, `contains`, `returns`, `param_type`, `see_also`, `inherits`, and `references`.
+- Use `help`, `ingestion_help`, `dotnet_help`, and `rust_help` for detailed guidance.
+- `health` returns `ok`.";
+
 /// MCP server wrapper around the solution registry and tool routers.
 #[derive(Clone)]
 pub struct DocxMcp<C: Connection> {
@@ -40,6 +61,7 @@ impl<C: Connection> DocxMcp<C> {
     #[must_use]
     pub fn with_registry(registry: Arc<SolutionRegistry<C>>) -> Self {
         let tool_router = Self::tool_router_core()
+            + Self::tool_router_ingest()
             + Self::tool_router_metadata()
             + Self::tool_router_data()
             + Self::tool_router_context();
@@ -97,7 +119,10 @@ impl<C: Connection> DocxMcp<C> {
 impl<C: Connection> ServerHandler for DocxMcp<C> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            instructions: Some(SERVER_INSTRUCTIONS.to_string()),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
             ..Default::default()
         }
     }

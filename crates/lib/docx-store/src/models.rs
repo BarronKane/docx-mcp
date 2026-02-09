@@ -4,7 +4,7 @@ use serde_json::Value;
 /// Project metadata tracked by the ingestion pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,7 +26,7 @@ pub struct Project {
 /// Metadata describing an ingestion run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ingest {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +48,7 @@ pub struct Ingest {
 /// Metadata describing the source document for an ingest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocSource {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,7 +72,7 @@ pub struct DocSource {
 /// Canonical symbol record produced during ingestion.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Symbol {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,7 +183,7 @@ pub struct SourceId {
 /// Documentation block associated with a symbol.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocBlock {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,7 +303,7 @@ pub struct DocSection {
 /// Chunked documentation text for embedding or search.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocChunk {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,7 +325,7 @@ pub struct DocChunk {
 /// Generic relation record for edges between entities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelationRecord {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(rename = "in")]
     pub in_id: String,
