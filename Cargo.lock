@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "docx-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "docx-store",
  "roxmltree",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "docx-ingest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum 0.7.9",
  "docx-core",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "docx-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum 0.7.9",
  "docx-core",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "docx-mcpd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "docx-core",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "docx-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
