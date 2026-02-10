@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use docx_store::models::{DocBlock, DocSource, RelationRecord, Symbol};
+use docx_store::models::{DocBlock, DocSource, Ingest, RelationRecord, Symbol};
 use docx_store::schema::{
     REL_CONTAINS,
     REL_DOCUMENTS,
@@ -19,6 +19,7 @@ use docx_store::schema::{
     make_symbol_key,
 };
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 use surrealdb::Connection;
 
 use crate::parsers::{CsharpParseOptions, CsharpXmlParser, RustdocJsonParser, RustdocParseOptions};
@@ -31,7 +32,8 @@ use super::metadata::ProjectUpsertRequest;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsharpIngestRequest {
     pub project_id: String,
-    pub xml: String,
+    pub xml: Option<String>,
+    pub xml_path: Option<String>,
     pub ingest_id: Option<String>,
     pub source_path: Option<String>,
     pub source_modified_at: Option<String>,
@@ -53,7 +55,8 @@ pub struct CsharpIngestReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustdocIngestRequest {
     pub project_id: String,
-    pub json: String,
+    pub json: Option<String>,
+    pub json_path: Option<String>,
     pub ingest_id: Option<String>,
     pub source_path: Option<String>,
     pub source_modified_at: Option<String>,
@@ -83,6 +86,7 @@ impl<C: Connection> DocxControlPlane<C> {
         let CsharpIngestRequest {
             project_id,
             xml,
+            xml_path,
             ingest_id,
             source_path,
             source_modified_at,
@@ -96,12 +100,17 @@ impl<C: Connection> DocxControlPlane<C> {
             )));
         }
 
+        let xml = resolve_ingest_payload(xml, xml_path, "xml")
+            .await
+            .map_err(ControlError::Store)?;
+
         let mut options = CsharpParseOptions::new(project_id.clone());
         if let Some(ref ingest_id) = ingest_id {
             options = options.with_ingest_id(ingest_id.clone());
         }
 
         let parsed = CsharpXmlParser::parse_async(xml, options).await?;
+        let ingest_source_modified_at = source_modified_at.clone();
 
         if let Some(ref assembly_name) = parsed.assembly_name {
             let _ = self
@@ -133,6 +142,9 @@ impl<C: Connection> DocxControlPlane<C> {
         let documents_edge_count = self
             .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
             .await?;
+        let _ = self
+            .create_ingest_record(&project_id, ingest_id.as_deref(), ingest_source_modified_at)
+            .await?;
 
         Ok(CsharpIngestReport {
             assembly_name: parsed.assembly_name,
@@ -154,6 +166,7 @@ impl<C: Connection> DocxControlPlane<C> {
         let RustdocIngestRequest {
             project_id,
             json,
+            json_path,
             ingest_id,
             source_path,
             source_modified_at,
@@ -167,12 +180,17 @@ impl<C: Connection> DocxControlPlane<C> {
             )));
         }
 
+        let json = resolve_ingest_payload(json, json_path, "json")
+            .await
+            .map_err(ControlError::Store)?;
+
         let mut options = RustdocParseOptions::new(project_id.clone());
         if let Some(ref ingest_id) = ingest_id {
             options = options.with_ingest_id(ingest_id.clone());
         }
 
         let parsed = RustdocJsonParser::parse_async(json, options).await?;
+        let ingest_source_modified_at = source_modified_at.clone();
 
         if let Some(ref crate_name) = parsed.crate_name {
             let _ = self
@@ -203,6 +221,9 @@ impl<C: Connection> DocxControlPlane<C> {
             .await?;
         let documents_edge_count = self
             .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
+            .await?;
+        let _ = self
+            .create_ingest_record(&project_id, ingest_id.as_deref(), ingest_source_modified_at)
             .await?;
 
         Ok(RustdocIngestReport {
@@ -250,6 +271,27 @@ impl<C: Connection> DocxControlPlane<C> {
         Ok(created.id)
     }
 
+    async fn create_ingest_record(
+        &self,
+        project_id: &str,
+        ingest_id: Option<&str>,
+        source_modified_at: Option<String>,
+    ) -> Result<Option<String>, ControlError> {
+        let ingest = Ingest {
+            id: ingest_id.map(str::to_string),
+            project_id: project_id.to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at,
+            ingested_at: None,
+            extra: None,
+        };
+        let created = self.store.create_ingest(ingest).await?;
+        Ok(created.id)
+    }
+
     async fn persist_relations(
         &self,
         stored_symbols: &[Symbol],
@@ -289,6 +331,40 @@ impl<C: Connection> DocxControlPlane<C> {
 
         Ok(documents_edge_count)
     }
+}
+
+async fn resolve_ingest_payload(
+    raw: Option<String>,
+    path: Option<String>,
+    field: &str,
+) -> Result<String, StoreError> {
+    if let Some(value) = normalize_payload(raw) {
+        return Ok(strip_bom(&value));
+    }
+    if let Some(path) = normalize_payload(path) {
+        let contents = fs::read_to_string(&path).await.map_err(|err| {
+            StoreError::InvalidInput(format!("failed to read {field}_path '{path}': {err}"))
+        })?;
+        return Ok(strip_bom(&contents));
+    }
+    Err(StoreError::InvalidInput(format!(
+        "{field} is required (provide {field} or {field}_path)"
+    )))
+}
+
+fn normalize_payload(value: Option<String>) -> Option<String> {
+    value.and_then(|payload| {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(payload)
+        }
+    })
+}
+
+fn strip_bom(value: &str) -> String {
+    value.strip_prefix('\u{feff}').unwrap_or(value).to_string()
 }
 
 struct DocSourceInput {

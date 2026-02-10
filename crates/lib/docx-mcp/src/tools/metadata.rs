@@ -125,9 +125,14 @@ impl<C: Connection> DocxMcp<C> {
         Parameters(params): Parameters<ListDocSourcesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(200);
+        let ingest_id = params
+            .ingest_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let control = self.control_for_solution(&params.solution).await?;
         let sources = control
-            .list_doc_sources(&params.project_id, params.ingest_id.as_deref(), limit)
+            .list_doc_sources(&params.project_id, ingest_id, limit)
             .await
             .map_err(helpers::map_err)?;
         Ok(CallToolResult::success(vec![Content::json(sources)?]))

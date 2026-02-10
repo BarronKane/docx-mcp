@@ -1,6 +1,7 @@
 services:
   docx-mcp:
-    image: barronkane/docx-mcp:latest
+    build: .
+    image: docx-mcp:local
     depends_on:
       - surrealdb
     environment:

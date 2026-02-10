@@ -57,7 +57,8 @@ async fn ingest_rustdoc_fixture_roundtrip() {
     let report = control
         .ingest_rustdoc_json(RustdocIngestRequest {
             project_id: project_id.to_string(),
-            json: json.clone(),
+            json: Some(json.clone()),
+            json_path: None,
             ingest_id: Some(ingest_id.to_string()),
             source_path: Some("target/doc/docx_store.json".to_string()),
             source_modified_at: None,

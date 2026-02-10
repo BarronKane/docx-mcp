@@ -32,9 +32,9 @@ struct CliArgs {
     max_entries: Option<usize>,
 
     #[arg(
-        long,
+        long = "stdio",
         env = "DOCX_ENABLE_STDIO",
-        default_value_t = true,
+        default_value_t = false,
         value_parser = BoolishValueParser::new()
     )]
     enable_stdio: bool,
@@ -42,7 +42,7 @@ struct CliArgs {
     #[arg(
         long,
         env = "DOCX_MCP_SERVE",
-        default_value_t = false,
+        default_value_t = true,
         value_parser = BoolishValueParser::new()
     )]
     mcp_serve: bool,

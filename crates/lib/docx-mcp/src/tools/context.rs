@@ -22,11 +22,17 @@ impl Default for HelpCommands {
             commands: vec![
                 "help - List MCP commands to get context with how this MCP server works."
                     .to_string(),
+                "version - Get the MCP server version."
+                    .to_string(),
                 "ingestion_help - Details how to send code documentation to the MCP server for ingestion."
                     .to_string(),
-                "ingest_csharp_xml - Ingest .NET XML documentation into the solution store."
+                "ingest_csharp_xml - Ingest .NET XML documentation into the solution store (xml or xml_path)."
                     .to_string(),
-                "ingest_rustdoc_json - Ingest rustdoc JSON output into the solution store."
+                "ingest_rustdoc_json - Ingest rustdoc JSON output into the solution store (json or json_path)."
+                    .to_string(),
+                "list_projects - List projects for a solution."
+                    .to_string(),
+                "search_projects - Search projects by wildcard pattern (e.g. docx*)."
                     .to_string(),
                 "list_ingests - List ingest metadata for a project."
                     .to_string(),
@@ -35,6 +41,16 @@ impl Default for HelpCommands {
                 "list_doc_sources - List document source metadata for a project."
                     .to_string(),
                 "get_doc_source - Fetch a specific document source by id."
+                    .to_string(),
+                "list_symbol_types - List symbol kinds present in a project."
+                    .to_string(),
+                "search_symbols - Search symbols by name fragment."
+                    .to_string(),
+                "get_symbol - Fetch a symbol by its key."
+                    .to_string(),
+                "list_doc_blocks - List doc blocks for a symbol."
+                    .to_string(),
+                "search_doc_blocks - Search doc blocks by text fragment."
                     .to_string(),
                 "get_symbol_adjacency - Fetch a symbol along with relation edges and related symbols."
                     .to_string(),
@@ -57,12 +73,12 @@ impl<C: Connection> DocxMcp<C> {
     #[tool(description = "Details how to send code documentation to the MCP server for ingestion")]
     async fn ingestion_help(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(
-r"
+ r#"
 1. Use the MCP ingestion tools to send documentation payloads into the server.
 2. Required fields for all ingest tools:
     - solution: the solution/tenant name managed by the MCP server.
     - project_id: the project or crate identifier inside the solution.
-    - xml/json: the documentation payload itself.
+    - documentation payload: provide raw XML/JSON file contents (full text), or use *_path.
 3. Optional metadata fields:
     - ingest_id: a caller-provided identifier to tag this ingest batch.
     - source_path: where the source documentation was generated (e.g. target/doc/<crate>.json).
@@ -70,10 +86,42 @@ r"
     - tool_version: the tool version that produced the docs.
     - source_hash: a hash of the source documentation file.
 4. Tool choices:
-    - ingest_csharp_xml: use for .NET XML documentation payloads.
-    - ingest_rustdoc_json: use for rustdoc JSON payloads emitted by `cargo doc`.
-5. After ingestion, use the metadata and data tools to query projects, symbols, and doc blocks.
-"
+    - ingest_csharp_xml: use for raw .NET XML documentation payloads (xml or xml_path).
+    - ingest_rustdoc_json: use for raw rustdoc JSON payloads (json or json_path).
+5. Payload options (MCP tools and HTTP ingest):
+    - Provide exactly one of:
+        - xml/json: raw file contents (full text). For rustdoc, json must be the full rustdoc JSON document.
+        - xml_path/json_path: path to a file on the MCP server host.
+      Empty strings are treated as missing.
+6. HTTP ingest endpoint (when MCP tool payloads are too large):
+    - POST to /ingest with JSON payload:
+      {
+        "solution": "<solution>",
+        "project_id": "<project_id>",
+        "kind": "csharp_xml" | "rustdoc_json",
+        "contents": "<raw file contents>",
+        "contents_path": "<optional server path>",
+        "ingest_id": "<optional>",
+        "source_path": "<optional>",
+        "source_modified_at": "<optional>",
+        "tool_version": "<optional>",
+        "source_hash": "<optional>"
+      }
+7. If the AI cannot send the full file content in one MCP tool call:
+    - Use a terminal command to POST the file directly (avoids pasting the full payload).
+      Example with curl (Linux/macOS):
+        curl -X POST http://127.0.0.1:4010/ingest \
+          -H "Content-Type: application/json" \
+          --data-binary @payload.json
+      Example with PowerShell (raw contents):
+        $body = @{ solution = "docx"; project_id = "docx-core"; kind = "rustdoc_json"; contents = Get-Content -Raw "target\doc\docx_core.json" } | ConvertTo-Json
+        Invoke-WebRequest -Uri http://127.0.0.1:4010/ingest -Method Post -ContentType "application/json" -Body $body
+      Example with PowerShell (file path on server):
+        $body = @{ solution = "docx"; project_id = "docx-core"; kind = "rustdoc_json"; contents_path = "target\doc\docx_core.json" } | ConvertTo-Json
+        Invoke-WebRequest -Uri http://127.0.0.1:4010/ingest -Method Post -ContentType "application/json" -Body $body
+    - If the payload exceeds the ingest size limit, increase DOCX_INGEST_MAX_BODY_BYTES or emit a smaller doc set.
+8. After ingestion, use the metadata and data tools to query projects, symbols, and doc blocks.
+ "#
         )]))
     }
 

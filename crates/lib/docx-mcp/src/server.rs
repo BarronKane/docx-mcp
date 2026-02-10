@@ -32,7 +32,7 @@ impl McpHttpServerConfig {
     pub const fn new(addr: SocketAddr) -> Self {
         Self {
             addr,
-            stateful_mode: true,
+            stateful_mode: false,
             sse_keep_alive: Some(Duration::from_secs(15)),
             sse_retry: Some(Duration::from_secs(3)),
         }

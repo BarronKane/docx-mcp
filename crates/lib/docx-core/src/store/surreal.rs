@@ -18,7 +18,7 @@ use docx_store::schema::{
     make_record_id,
 };
 use surrealdb::{Connection, Surreal};
-use surrealdb::sql::{Regex, Thing};
+use surrealdb::sql::{Id, Regex, Thing};
 use uuid::Uuid;
 
 /// Errors returned by the `SurrealDB` store implementation.
@@ -82,15 +82,20 @@ impl<C: Connection> SurrealDocStore<C> {
     ///
     /// # Errors
     /// Returns `StoreError` if validation fails or the database write fails.
-    pub async fn upsert_project(&self, project: Project) -> StoreResult<Project> {
+    pub async fn upsert_project(&self, mut project: Project) -> StoreResult<Project> {
         ensure_non_empty(&project.project_id, "project_id")?;
-        let fallback = project.clone();
-        let record: Option<Project> = self
-            .db
-            .update((TABLE_PROJECT, project.project_id.clone()))
-            .content(project)
+        let id = project
+            .id
+            .clone()
+            .unwrap_or_else(|| project.project_id.clone());
+        project.id = Some(id.clone());
+        let record = Thing::from((TABLE_PROJECT, id.as_str()));
+        self.db
+            .query("UPSERT $record CONTENT $data RETURN NONE;")
+            .bind(("record", record))
+            .bind(("data", project.clone()))
             .await?;
-        Ok(record.unwrap_or(fallback))
+        Ok(project)
     }
 
     /// Fetches a project by id.
@@ -107,8 +112,14 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_ingest(&self, ingest_id: &str) -> StoreResult<Option<Ingest>> {
-        let record: Option<Ingest> = self.db.select((TABLE_INGEST, ingest_id)).await?;
-        Ok(record)
+        let record = Thing::from((TABLE_INGEST, ingest_id));
+        let mut response = self
+            .db
+            .query("SELECT * FROM $record;")
+            .bind(("record", record))
+            .await?;
+        let records: Vec<IngestRow> = response.take(0)?;
+        Ok(records.into_iter().next().map(Ingest::from))
     }
 
     /// Lists projects up to the provided limit.
@@ -159,8 +170,8 @@ impl<C: Connection> SurrealDocStore<C> {
             .bind(("project_id", project_id))
             .bind(("limit", limit))
             .await?;
-        let records: Vec<Ingest> = response.take(0)?;
-        Ok(records)
+        let records: Vec<IngestRow> = response.take(0)?;
+        Ok(records.into_iter().map(Ingest::from).collect())
     }
 
     /// Creates an ingest record.
@@ -506,8 +517,8 @@ impl<C: Connection> SurrealDocStore<C> {
             .bind(("project_id", project_id))
             .bind(("ingest_ids", ingest_ids))
             .await?;
-        let records: Vec<DocSource> = response.take(0)?;
-        Ok(records)
+        let records: Vec<DocSourceRow> = response.take(0)?;
+        Ok(records.into_iter().map(DocSource::from).collect())
     }
 
     /// Fetches a document source by id.
@@ -515,8 +526,14 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_doc_source(&self, doc_source_id: &str) -> StoreResult<Option<DocSource>> {
-        let record: Option<DocSource> = self.db.select((TABLE_DOC_SOURCE, doc_source_id)).await?;
-        Ok(record)
+        let record = Thing::from((TABLE_DOC_SOURCE, doc_source_id));
+        let mut response = self
+            .db
+            .query("SELECT * FROM $record;")
+            .bind(("record", record))
+            .await?;
+        let records: Vec<DocSourceRow> = response.take(0)?;
+        Ok(records.into_iter().next().map(DocSource::from))
     }
 
     /// Lists document sources for a project, optionally filtered by ingest id.
@@ -551,8 +568,8 @@ impl<C: Connection> SurrealDocStore<C> {
         } else {
             response.await?
         };
-        let records: Vec<DocSource> = response.take(0)?;
-        Ok(records)
+        let records: Vec<DocSourceRow> = response.take(0)?;
+        Ok(records.into_iter().map(DocSource::from).collect())
     }
 
     /// Lists relation records in a table where the symbol is the source (outgoing).
@@ -648,6 +665,66 @@ fn ensure_non_empty(value: &str, field: &str) -> StoreResult<()> {
 }
 
 #[derive(serde::Deserialize)]
+struct IngestRow {
+    id: Thing,
+    project_id: String,
+    git_commit: Option<String>,
+    git_branch: Option<String>,
+    git_tag: Option<String>,
+    project_version: Option<String>,
+    source_modified_at: Option<String>,
+    ingested_at: Option<String>,
+    extra: Option<serde_json::Value>,
+}
+
+impl From<IngestRow> for Ingest {
+    fn from(row: IngestRow) -> Self {
+        Self {
+            id: Some(thing_id_to_string(row.id)),
+            project_id: row.project_id,
+            git_commit: row.git_commit,
+            git_branch: row.git_branch,
+            git_tag: row.git_tag,
+            project_version: row.project_version,
+            source_modified_at: row.source_modified_at,
+            ingested_at: row.ingested_at,
+            extra: row.extra,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DocSourceRow {
+    id: Thing,
+    project_id: String,
+    ingest_id: Option<String>,
+    language: Option<String>,
+    source_kind: Option<String>,
+    path: Option<String>,
+    tool_version: Option<String>,
+    hash: Option<String>,
+    source_modified_at: Option<String>,
+    extra: Option<serde_json::Value>,
+}
+
+impl From<DocSourceRow> for DocSource {
+    fn from(row: DocSourceRow) -> Self {
+        Self {
+            id: Some(thing_id_to_string(row.id)),
+            project_id: row.project_id,
+            ingest_id: row.ingest_id,
+            language: row.language,
+            source_kind: row.source_kind,
+            path: row.path,
+            tool_version: row.tool_version,
+            hash: row.hash,
+            source_modified_at: row.source_modified_at,
+            extra: row.extra,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
 struct SymbolKindRow {
     kind: Option<String>,
 }
@@ -665,6 +742,13 @@ fn limit_to_i64(limit: usize) -> StoreResult<i64> {
     i64::try_from(limit).map_err(|_| {
         StoreError::InvalidInput("limit exceeds supported range".to_string())
     })
+}
+
+fn thing_id_to_string(thing: Thing) -> String {
+    match thing.id {
+        Id::String(value) => value,
+        other => other.to_string(),
+    }
 }
 
 fn build_project_regex(pattern: &str) -> StoreResult<Regex> {
@@ -696,4 +780,80 @@ fn glob_to_regex_body(pattern: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use docx_store::models::{DocSource, Ingest};
+    use surrealdb::engine::local::{Db, Mem};
+    use surrealdb::Surreal;
+
+    async fn build_store() -> SurrealDocStore<Db> {
+        let db = Surreal::new::<Mem>(())
+            .await
+            .expect("failed to create in-memory SurrealDB");
+        db.use_ns("docx")
+            .use_db("test")
+            .await
+            .expect("failed to set namespace/db");
+        SurrealDocStore::new(db)
+    }
+
+    #[tokio::test]
+    async fn list_ingests_includes_ids() {
+        let store = build_store().await;
+        let ingest = Ingest {
+            id: Some("ingest-1".to_string()),
+            project_id: "project".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+
+        store
+            .create_ingest(ingest)
+            .await
+            .expect("failed to create ingest");
+        let ingests = store
+            .list_ingests("project", 10)
+            .await
+            .expect("failed to list ingests");
+
+        assert_eq!(ingests.len(), 1);
+        assert_eq!(ingests[0].id.as_deref(), Some("ingest-1"));
+    }
+
+    #[tokio::test]
+    async fn list_doc_sources_includes_ids() {
+        let store = build_store().await;
+        let source = DocSource {
+            id: Some("source-1".to_string()),
+            project_id: "project".to_string(),
+            ingest_id: Some("ingest-1".to_string()),
+            language: None,
+            source_kind: None,
+            path: None,
+            tool_version: None,
+            hash: None,
+            source_modified_at: None,
+            extra: None,
+        };
+
+        store
+            .create_doc_source(source)
+            .await
+            .expect("failed to create doc source");
+        let sources = store
+            .list_doc_sources_by_project("project", None, 10)
+            .await
+            .expect("failed to list doc sources");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id.as_deref(), Some("source-1"));
+    }
 }

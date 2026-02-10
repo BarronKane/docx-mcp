@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use docx_core::control::DocxControlPlane;
 use docx_core::services::{RegistryError, SolutionRegistry};
+use serde::Serialize;
 use rmcp::{
     ErrorData,
     ServerHandler,
@@ -22,14 +23,24 @@ use rmcp::{
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use surrealdb::Connection;
 
+const SERVER_NAME: &str = "docx-mcp";
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Serialize)]
+struct VersionInfo {
+    name: &'static str,
+    version: &'static str,
+}
+
 const SERVER_INSTRUCTIONS: &str = r"docx-mcp provides MCP tools for ingesting documentation and querying a metadata-rich graph.
 
 Workflow:
 1. Choose a `solution` name (tenant). If unsure, call `list_solutions`. If there is no solution
     that matches the one your in (by root folder name or similar means), choose a new one to use.
 2. Ingest documentation into a `project_id` (project or crate) using:
-   - `ingest_csharp_xml` for .NET XML documentation.
-   - `ingest_rustdoc_json` for rustdoc JSON output.
+   - `ingest_csharp_xml` for raw .NET XML documentation (xml or xml_path).
+   - `ingest_rustdoc_json` for raw rustdoc JSON output (json or json_path).
+   Provide exactly one of: `xml/json` or `xml_path/json_path`.
    Include optional metadata: `ingest_id`, `source_path`, `source_modified_at`, `tool_version`, `source_hash`.
 3. Query metadata:
    - `list_projects`, `search_projects`, `list_ingests`, `get_ingest`, `list_doc_sources`, `get_doc_source`.
@@ -42,7 +53,10 @@ Notes:
 - Symbol metadata includes source file paths, line/column, signatures, params, and return types when available.
 - Relation edges include `member_of`, `contains`, `returns`, `param_type`, `see_also`, `inherits`, and `references`.
 - Use `help`, `ingestion_help`, `dotnet_help`, and `rust_help` for detailed guidance.
-- `health` returns `ok`.";
+- For large payloads, use the HTTP ingest server (POST `http://<host>:4010/ingest`) with `contents`
+  or `contents_path`.
+- `health` returns `ok`.
+- `version` returns the docx-mcp server version.";
 
 /// MCP server wrapper around the solution registry and tool routers.
 #[derive(Clone)]
@@ -113,6 +127,15 @@ impl<C: Connection> DocxMcp<C> {
     #[tool(description = "Health check. Returns 'ok'.")]
     async fn health(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text("ok")]))
+    }
+
+    #[tool(description = "Get the MCP server version.")]
+    async fn version(&self) -> Result<CallToolResult, ErrorData> {
+        let payload = VersionInfo {
+            name: SERVER_NAME,
+            version: SERVER_VERSION,
+        };
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
     }
 }
 

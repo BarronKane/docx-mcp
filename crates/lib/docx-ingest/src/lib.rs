@@ -200,12 +200,41 @@ struct RustdocIngestPayload {
     request: RustdocIngestRequest,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum IngestKind {
+    CsharpXml,
+    RustdocJson,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestPayload {
+    solution: String,
+    project_id: String,
+    kind: IngestKind,
+    contents: Option<String>,
+    contents_path: Option<String>,
+    ingest_id: Option<String>,
+    source_path: Option<String>,
+    source_modified_at: Option<String>,
+    tool_version: Option<String>,
+    source_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", content = "report", rename_all = "snake_case")]
+enum IngestResponse {
+    CsharpXml(CsharpIngestReport),
+    RustdocJson(RustdocIngestReport),
+}
+
 fn build_router<C>(state: AppState<C>, max_body_bytes: usize) -> Router
 where
     C: Connection + Send + Sync + 'static,
 {
     Router::new()
         .route("/health", get(health))
+        .route("/ingest", post(ingest_payload::<C>))
         .route("/ingest/csharp", post(ingest_csharp::<C>))
         .route("/ingest/rustdoc", post(ingest_rustdoc::<C>))
         .layer(DefaultBodyLimit::max(max_body_bytes))
@@ -224,9 +253,10 @@ where
     C: Connection + Send + Sync + 'static,
 {
     let control = control_for_solution(&state, &payload.solution).await?;
+    let request = payload.request;
     let ingest = tokio::time::timeout(
         state.request_timeout,
-        control.ingest_csharp_xml(payload.request),
+        control.ingest_csharp_xml(request),
     )
     .await
     .map_err(|_| ApiError::timeout())??;
@@ -242,15 +272,67 @@ where
     C: Connection + Send + Sync + 'static,
 {
     let control = control_for_solution(&state, &payload.solution).await?;
+    let request = payload.request;
     let ingest = tokio::time::timeout(
         state.request_timeout,
-        control.ingest_rustdoc_json(payload.request),
+        control.ingest_rustdoc_json(request),
     )
     .await
     .map_err(|_| ApiError::timeout())??;
 
     Ok(Json(ingest))
 }
+
+async fn ingest_payload<C>(
+    State(state): State<AppState<C>>,
+    Json(payload): Json<IngestPayload>,
+) -> Result<Json<IngestResponse>, ApiError>
+where
+    C: Connection + Send + Sync + 'static,
+{
+    let control = control_for_solution(&state, &payload.solution).await?;
+    let ingest = match payload.kind {
+        IngestKind::CsharpXml => {
+            let report = tokio::time::timeout(
+                state.request_timeout,
+                control.ingest_csharp_xml(CsharpIngestRequest {
+                    project_id: payload.project_id,
+                    xml: payload.contents,
+                    xml_path: payload.contents_path,
+                    ingest_id: payload.ingest_id,
+                    source_path: payload.source_path,
+                    source_modified_at: payload.source_modified_at,
+                    tool_version: payload.tool_version,
+                    source_hash: payload.source_hash,
+                }),
+            )
+            .await
+            .map_err(|_| ApiError::timeout())??;
+            IngestResponse::CsharpXml(report)
+        }
+        IngestKind::RustdocJson => {
+            let report = tokio::time::timeout(
+                state.request_timeout,
+                control.ingest_rustdoc_json(RustdocIngestRequest {
+                    project_id: payload.project_id,
+                    json: payload.contents,
+                    json_path: payload.contents_path,
+                    ingest_id: payload.ingest_id,
+                    source_path: payload.source_path,
+                    source_modified_at: payload.source_modified_at,
+                    tool_version: payload.tool_version,
+                    source_hash: payload.source_hash,
+                }),
+            )
+            .await
+            .map_err(|_| ApiError::timeout())??;
+            IngestResponse::RustdocJson(report)
+        }
+    };
+
+    Ok(Json(ingest))
+}
+
 
 async fn control_for_solution<C>(
     state: &AppState<C>,
@@ -265,4 +347,146 @@ where
     }
     let handle = state.registry.get_or_init(trimmed).await.map_err(ApiError::from)?;
     Ok(handle.control())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use docx_core::services::{BuildHandleFn, SolutionHandle, SolutionRegistryConfig};
+    use serde_json::Value;
+    use surrealdb::engine::local::{Db, Mem};
+    use surrealdb::Surreal;
+    use tower::ServiceExt;
+
+    fn fixture_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("docx-core")
+            .join("tests")
+            .join("data")
+            .join("docx_store_min.json")
+    }
+
+    fn load_fixture() -> String {
+        let path = fixture_path();
+        std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            let path_display = path.display();
+            panic!("failed to read rustdoc fixture at {path_display}: {err}")
+        })
+    }
+
+    fn build_registry() -> SolutionRegistry<Db> {
+        let build: BuildHandleFn<Db> = Arc::new(move |solution: String| {
+            Box::pin(async move {
+                let db = Surreal::new::<Mem>(())
+                    .await
+                    .map_err(|err| RegistryError::BuildFailed(err.to_string()))?;
+                db.use_ns("docx")
+                    .use_db(&solution)
+                    .await
+                    .map_err(|err| RegistryError::BuildFailed(err.to_string()))?;
+                Ok(Arc::new(SolutionHandle::from_surreal(db)))
+            })
+        });
+        SolutionRegistry::new(SolutionRegistryConfig::new(build))
+    }
+
+    #[tokio::test]
+    async fn ingest_payload_accepts_rustdoc_json() {
+        let registry = Arc::new(build_registry());
+        let state = AppState {
+            registry,
+            request_timeout: Duration::from_secs(5),
+        };
+        let app = build_router(state, 5 * 1024 * 1024);
+
+        let body = serde_json::json!({
+            "solution": "docx-mcp",
+            "project_id": "docx-store",
+            "kind": "rustdoc_json",
+            "contents": load_fixture(),
+            "ingest_id": "fixture",
+            "source_path": "target/doc/docx_store_min.json",
+            "tool_version": "fixture"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("ingest request failed");
+
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("failed to read response body");
+        if status != StatusCode::OK {
+            let body_text = String::from_utf8_lossy(&bytes);
+            panic!("unexpected status {status}: {body_text}");
+        }
+        let payload: Value = serde_json::from_slice(&bytes)
+            .expect("response should be valid JSON");
+        assert_eq!(payload.get("kind").and_then(Value::as_str), Some("rustdoc_json"));
+        assert!(payload
+            .get("report")
+            .and_then(|value| value.get("symbol_count"))
+            .is_some());
+    }
+
+
+    #[tokio::test]
+    async fn ingest_payload_accepts_contents_path() {
+        let registry = Arc::new(build_registry());
+        let state = AppState {
+            registry,
+            request_timeout: Duration::from_secs(5),
+        };
+        let app = build_router(state, 5 * 1024 * 1024);
+
+        let temp_path = std::env::temp_dir().join("docx_ingest_fixture.json");
+        std::fs::write(&temp_path, load_fixture()).expect("failed to write temp fixture");
+
+        let body = serde_json::json!({
+            "solution": "docx-mcp",
+            "project_id": "docx-store",
+            "kind": "rustdoc_json",
+            "contents_path": temp_path.to_string_lossy(),
+            "ingest_id": "fixture-path",
+            "source_path": "target/doc/docx_store_min.json",
+            "tool_version": "fixture"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("ingest request failed");
+
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("failed to read response body");
+        if status != StatusCode::OK {
+            let body_text = String::from_utf8_lossy(&bytes);
+            panic!("unexpected status {status}: {body_text}");
+        }
+        let payload: Value = serde_json::from_slice(&bytes)
+            .expect("response should be valid JSON");
+        assert_eq!(payload.get("kind").and_then(Value::as_str), Some("rustdoc_json"));
+        let _ = std::fs::remove_file(&temp_path);
+    }
 }
