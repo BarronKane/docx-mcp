@@ -107,13 +107,42 @@ impl<C: Connection> DocxMcp<C> {
         "tool_version": "<optional>",
         "source_hash": "<optional>"
       }
+    - Required for HTTP ingest: solution, project_id, kind, and either contents or contents_path.
+    - contents_path must be readable from the server host. If the server runs in Docker,
+      mount the file into the container (e.g. -v <host_dir>:/data) and send /data/<file>.
 7. If the AI cannot send the full file content in one MCP tool call:
     - Use a terminal command to POST the file directly (avoids pasting the full payload).
-      Example with curl (Linux/macOS):
+      Example with curl (Linux/macOS, C# XML raw contents):
+        python3 - <<'PY' > payload.json
+        import json, pathlib
+        print(json.dumps({
+          "solution": "my-solution",
+          "project_id": "MyAssembly",
+          "kind": "csharp_xml",
+          "contents": pathlib.Path("/path/MyAssembly.xml").read_text()
+        }))
+        PY
         curl -X POST http://127.0.0.1:4010/ingest \
           -H "Content-Type: application/json" \
           --data-binary @payload.json
-      Example with PowerShell (raw contents):
+      Example with curl (Linux/macOS, rustdoc JSON raw contents):
+        python3 - <<'PY' > payload.json
+        import json, pathlib
+        print(json.dumps({
+          "solution": "docx",
+          "project_id": "docx-core",
+          "kind": "rustdoc_json",
+          "contents": pathlib.Path("target/doc/docx_core.json").read_text()
+        }))
+        PY
+        curl -X POST http://127.0.0.1:4010/ingest \
+          -H "Content-Type: application/json" \
+          --data-binary @payload.json
+      Example with PowerShell (C# XML raw contents):
+        $xml = Get-Content -Raw "C:\path\MyAssembly.xml"
+        $body = @{ solution = "my-solution"; project_id = "MyAssembly"; kind = "csharp_xml"; contents = $xml } | ConvertTo-Json
+        Invoke-WebRequest -Uri http://127.0.0.1:4010/ingest -Method Post -ContentType "application/json" -Body $body
+      Example with PowerShell (rustdoc JSON raw contents):
         $body = @{ solution = "docx"; project_id = "docx-core"; kind = "rustdoc_json"; contents = Get-Content -Raw "target\doc\docx_core.json" } | ConvertTo-Json
         Invoke-WebRequest -Uri http://127.0.0.1:4010/ingest -Method Post -ContentType "application/json" -Body $body
       Example with PowerShell (file path on server):
@@ -153,7 +182,9 @@ r"
         ```
     .net doc XML is emitted beside the assembly in the `bin/<configuration>/<netstandard>/` folder.
     e.g. `bin\Debug\net10.0` or `bin\Release\net9.0\`
-2.  The xml files must then be sent to the MCP server for ingestion, details in the mcp command `ingestion_help`.
+2.  The xml files must then be sent to the MCP server for ingestion (kind=csharp_xml); see `ingestion_help`.
+    If using contents_path, the file path must be readable from the server host. When running in Docker,
+    mount the file into the container or send raw contents instead.
 3.  During ingestion, the symbols are stripped to a cannonical dataset form and a graph database is populated or updated.
 4.  From the graph database, the other mcp commands can query for information about the code and relationships.
 "
@@ -177,7 +208,9 @@ r#"
         2.  `RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --workspace --exclude <crate_name> --exclude <crate_name> --no-deps --document-private-items`
     It may be beneficial to set up a build.rs to automate the generation of rustdoc JSON.
     All rustdoc emission is in <root>/target/doc
-3.  The JSON files are sent to the MCP server for ingestion, details in the mcp command `ingestion_help`.
+3.  The JSON files are sent to the MCP server for ingestion (kind=rustdoc_json); see `ingestion_help`.
+    If using contents_path, the file path must be readable from the server host. When running in Docker,
+    mount the file into the container or send raw contents instead.
 4.  During ingestion, symbols are stripped to a cannonical dataset form and a graph database is populated or updated.
     From the graph database, the other mcp commands can query for information about the code and relationships.
 "#

@@ -36,7 +36,7 @@ const SERVER_INSTRUCTIONS: &str = r"docx-mcp provides MCP tools for ingesting do
 
 Workflow:
 1. Choose a `solution` name (tenant). If unsure, call `list_solutions`. If there is no solution
-    that matches the one your in (by root folder name or similar means), choose a new one to use.
+    that matches the one you're in (by root folder name or similar means), choose a new one to use.
 2. Ingest documentation into a `project_id` (project or crate) using:
    - `ingest_csharp_xml` for raw .NET XML documentation (xml or xml_path).
    - `ingest_rustdoc_json` for raw rustdoc JSON output (json or json_path).
@@ -53,8 +53,10 @@ Notes:
 - Symbol metadata includes source file paths, line/column, signatures, params, and return types when available.
 - Relation edges include `member_of`, `contains`, `returns`, `param_type`, `see_also`, `inherits`, and `references`.
 - Use `help`, `ingestion_help`, `dotnet_help`, and `rust_help` for detailed guidance.
-- For large payloads, use the HTTP ingest server (POST `http://<host>:4010/ingest`) with `contents`
-  or `contents_path`.
+- For large payloads, use the HTTP ingest server (POST `http://<host>:4010/ingest`) with required
+  `solution`, `project_id`, `kind` (`csharp_xml` or `rustdoc_json`), and either `contents` or `contents_path`.
+- `contents_path` must be readable from the server host. If running in Docker, mount the file into the
+  container or send raw `contents` instead.
 - `health` returns `ok`.
 - `version` returns the docx-mcp server version.";
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::ErrorKind;
 
 use docx_store::models::{DocBlock, DocSource, Ingest, RelationRecord, Symbol};
 use docx_store::schema::{
@@ -343,7 +344,13 @@ async fn resolve_ingest_payload(
     }
     if let Some(path) = normalize_payload(path) {
         let contents = fs::read_to_string(&path).await.map_err(|err| {
-            StoreError::InvalidInput(format!("failed to read {field}_path '{path}': {err}"))
+            let mut message = format!("failed to read {field}_path '{path}': {err}");
+            if err.kind() == ErrorKind::NotFound {
+                message.push_str(
+                    "; file not found on server host. If running in Docker, mount the file into the container or send raw contents instead.",
+                );
+            }
+            StoreError::InvalidInput(message)
         })?;
         return Ok(strip_bom(&contents));
     }
