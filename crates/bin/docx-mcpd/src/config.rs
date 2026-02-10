@@ -175,7 +175,9 @@ impl TryFrom<CliArgs> for DocxConfig {
             .db_password
             .filter(|value| !value.trim().is_empty());
 
-        if !args.db_in_memory {
+        let db_in_memory = args.db_in_memory || db_uri.is_none();
+
+        if !db_in_memory {
             if db_uri.is_none() {
                 return Err(ConfigError::MissingSetting("DOCX_DB_URI"));
             }
@@ -206,11 +208,51 @@ impl TryFrom<CliArgs> for DocxConfig {
             ingest_addr: args.ingest_addr,
             ingest_timeout: Duration::from_secs(args.ingest_timeout_secs),
             ingest_max_body_bytes: args.ingest_max_body_bytes,
-            db_in_memory: args.db_in_memory,
+            db_in_memory,
             db_uri,
             db_username,
             db_password,
             test_mode: args.test_mode,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_args() -> CliArgs {
+        CliArgs {
+            db_namespace: DEFAULT_DB_NAMESPACE.to_string(),
+            registry_ttl_secs: DEFAULT_REGISTRY_TTL_SECS,
+            registry_sweep_secs: None,
+            max_entries: None,
+            enable_stdio: false,
+            mcp_serve: true,
+            ingest_serve: true,
+            mcp_http_addr: DEFAULT_MCP_HTTP_ADDR.parse().expect("valid MCP addr"),
+            ingest_addr: DEFAULT_INGEST_ADDR.parse().expect("valid ingest addr"),
+            ingest_timeout_secs: DEFAULT_INGEST_TIMEOUT_SECS,
+            ingest_max_body_bytes: DEFAULT_INGEST_MAX_BODY_BYTES,
+            db_in_memory: true,
+            db_uri: None,
+            db_username: None,
+            db_password: None,
+            test_mode: false,
+        }
+    }
+
+    #[test]
+    fn defaults_to_in_memory_when_db_uri_missing() {
+        let mut args = base_args();
+        args.db_in_memory = false;
+        args.db_uri = None;
+        args.db_username = None;
+        args.db_password = None;
+
+        let config = DocxConfig::try_from(args).expect("config should parse");
+
+        assert!(config.db_in_memory);
+        assert!(config.db_uri.is_none());
     }
 }

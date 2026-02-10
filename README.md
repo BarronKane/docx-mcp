@@ -63,11 +63,12 @@ Container defaults:
 - MCP HTTP: enabled (`DOCX_MCP_SERVE=1`).
 - Ingest HTTP: enabled (`DOCX_INGEST_SERVE=1`).
 - Stdio: disabled (`DOCX_ENABLE_STDIO=0`).
-- External DB client: enabled (`DOCX_DB_IN_MEMORY=0`).
+- Database: in-memory if `DOCX_DB_URI` is missing (or `DOCX_DB_IN_MEMORY=1`).
 
 Notes:
 - Compose runs SurrealDB as a separate service and wires `DOCX_DB_URI=ws://surrealdb:8000` by default.
-- When running the container directly, provide your own `DOCX_DB_URI` + credentials.
+- When running the container directly with SurrealDB, provide your own `DOCX_DB_URI` + credentials.
+- Without SurrealDB args (`DOCX_DB_URI` unset), the server uses the in-memory database by default.
 - When `DOCX_MCP_SERVE=0`, a non-memory database is required unless `--test` is supplied (set `DOCX_DB_IN_MEMORY=0` with `DOCX_DB_URI` + credentials).
 
 Override addresses with:
