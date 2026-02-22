@@ -41,8 +41,9 @@ Workflow:
    - `list_projects`, `search_projects`, `list_ingests`, `get_ingest`, `list_doc_sources`, `get_doc_source`.
    - `delete_solution` removes a full solution database (destructive; requires `confirm=true`).
 4. Query symbols and docs:
-   - `list_symbol_types`, `search_symbols`, `get_symbol`, `list_doc_blocks`, `search_doc_blocks`.
-   - `get_symbol_adjacency` returns symbols, doc blocks, doc sources, and relation edges.
+   - `list_symbol_types`, `search_symbols`, `search_symbols_advanced`, `get_symbol`, `list_doc_blocks`, `search_doc_blocks`.
+   - `get_symbol_adjacency` returns symbols, doc blocks, doc sources, relation edges, and hydration summary.
+   - `audit_project_completeness` reports field completeness and relation coverage counters.
 
 Notes:
 - `symbol_key` format is `{language}|{project_id}|{qualified_name}` for rustdoc data.

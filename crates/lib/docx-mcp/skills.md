@@ -34,6 +34,13 @@ A **solution** is the top-level tenant. It maps to a SurrealDB database. Use the
 ### Project
 A **project** (`project_id`) is a crate, assembly, or library within a solution. For Rust, this is typically the crate name. For .NET, it's the assembly name.
 
+### Ingest ID
+`ingest_id` may be caller-provided during ingestion. Internally, ingest records are project-scoped (`<project_id>::<ingest_id>`), while doc sources usually store the requested value (`<ingest_id>`).
+- `list_ingests` returns the scoped ingest id.
+- `get_ingest` accepts the scoped ingest id directly.
+- `get_ingest` also accepts the requested id only when it is unique across projects in the same solution.
+- `list_doc_sources` ingest filters accept either form (`smoke` or `MyProject::smoke`).
+
 ### Symbol Key
 Symbols are identified by a composite key: `{language}|{project_id}|{qualified_name}`.
 - Rust example: `rust|docx_core|docx_core::control::DocxControlPlane`
@@ -48,12 +55,9 @@ The graph stores typed edges between symbols:
 | `returns` | Function/method returns this type |
 | `param_type` | Function/method has a parameter of this type |
 | `see_also` | Documentation cross-reference |
-| `inherits` | Type inherits from / doc inherits from |
-| `implements` | Type implements a trait/interface |
+| `inherits` | Type inheritance relation |
 | `references` | Documentation references this symbol (e.g. exception types) |
 | `observed_in` | Symbol was observed in a specific ingested documentation source |
-| `overload_of` | Method is an overload of another |
-| `type_of` | Symbol has this type |
 
 ---
 
@@ -112,6 +116,7 @@ search_projects         -- Find projects by pattern (e.g. "docx*")
 list_symbol_types       -- What kinds of symbols exist? (struct, function, module, etc.)
 get_members             -- List members under a namespace/module scope
 search_symbols          -- Find symbols by name fragment
+search_symbols_advanced -- Exact/fuzzy multi-filter symbol search
 ```
 
 #### Detail Retrieval
@@ -132,6 +137,7 @@ list_ingests            -- Ingestion history for a project
 get_ingest              -- Details of a specific ingest run
 list_doc_sources        -- Source file metadata for ingested docs
 get_doc_source          -- Details of a specific doc source
+audit_project_completeness -- Coverage counts for symbols, docs, and relations
 ```
 
 ---
@@ -146,10 +152,12 @@ get_doc_source          -- Details of a specific doc source
 | Understand a symbol's full context | `get_symbol_adjacency` (returns symbol + docs + relations) |
 | Browse a namespace or module | `get_members` with the scope (qualified name prefix) |
 | Find docs mentioning a concept | `search_doc_blocks` with a text fragment |
+| Find a symbol with exact key/signature filters | `search_symbols_advanced` |
 | Check what kinds of things a project has | `list_symbol_types` |
 | Get a symbol's signature and parameters | `get_symbol` |
 | See what a function returns or takes | `get_symbol_adjacency` (check `returns` and `param_types`) |
-| Trace inheritance or implementations | `get_symbol_adjacency` (check `inherits`, `implements`) |
+| Trace inheritance | `get_symbol_adjacency` (check `inherits`) |
+| Check ingestion/completeness coverage quickly | `audit_project_completeness` |
 | Verify the server is running | `health` |
 
 ---
@@ -170,8 +178,13 @@ get_doc_source          -- Details of a specific doc source
 
 ### Pattern: Explore Type Hierarchy
 1. `get_symbol_adjacency(solution, project_id, symbol_key)` for the base type
-2. Check `inherits`, `implements`, and `contains` edges in the result
+2. Check `inherits` and `contains` edges in the result
 3. Follow related symbol keys for connected types
+
+### Pattern: Exact Symbol Lookup
+1. `search_symbols_advanced(solution, project_id, symbol_key="...")`
+2. If needed, add `qualified_name` or `signature` filters to disambiguate
+3. `get_symbol_adjacency(solution, project_id, symbol_key)` for full context
 
 ### Pattern: Search for Error Handling Guidance
 1. `search_doc_blocks(solution, project_id, text="error")` or `text="panic"`
@@ -185,6 +198,7 @@ get_doc_source          -- Details of a specific doc source
 - **Don't guess symbol keys** -- use `search_symbols` to find the correct key first, then use it in subsequent queries.
 - **Don't skip the solution parameter** -- every query tool requires `solution`. Use `list_solutions` if unsure.
 - **Don't re-ingest unnecessarily** -- check `list_ingests` to see if documentation is already current.
+- **Don't assume unscoped ingest ids are always resolvable** -- if the same requested `ingest_id` is reused across projects, use the scoped form (`project::ingest`) for `get_ingest`.
 - **Don't use `get_symbol_adjacency` for simple lookups** -- if you only need the docs, `list_doc_blocks` is lighter. Use adjacency when you need the relationship graph.
 
 ---
@@ -198,6 +212,8 @@ get_doc_source          -- Details of a specific doc source
 | Ingest fails with payload too large | Use the HTTP ingest endpoint (`POST /ingest`) or `contents_path` instead of inline content. |
 | `contents_path` not found | The path must be accessible from the server host. If using Docker, mount the file into the container. |
 | Symbol key not found | Symbol keys are case-sensitive and language-prefixed. Use `search_symbols` to find the exact key. |
+| `get_ingest` says id is ambiguous | Use the project-scoped id from `list_ingests` (format: `<project_id>::<requested_ingest_id>`). |
+| `list_doc_sources` filtered by ingest id is empty | Try either ingest form: requested (`smoke`) or scoped (`MyProject::smoke`). |
 | Rustdoc JSON generation fails | Requires Rust nightly. Use `cargo +nightly rustdoc` with `-Z unstable-options --output-format json`. |
 | No XML generated for .NET project | Ensure `<GenerateDocumentationFile>true</GenerateDocumentationFile>` is set and rebuild. |
 
@@ -243,4 +259,6 @@ get_doc_source          -- Details of a specific doc source
 | `list_doc_blocks` | `solution`, `project_id`, `symbol_key` | `ingest_id` |
 | `get_symbol_adjacency` | `solution`, `project_id`, `symbol_key` | `limit` |
 | `search_symbols` | `solution`, `project_id`, `name` | `limit` |
+| `search_symbols_advanced` | `solution`, `project_id` | `name`, `qualified_name`, `symbol_key`, `signature`, `limit` |
 | `search_doc_blocks` | `solution`, `project_id`, `text` | `limit` |
+| `audit_project_completeness` | `solution`, `project_id` | |

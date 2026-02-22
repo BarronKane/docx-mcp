@@ -48,6 +48,8 @@ impl Default for HelpCommands {
                     .to_string(),
                 "search_symbols - Search symbols by name fragment."
                     .to_string(),
+                "search_symbols_advanced - Search symbols by optional filters (name, qualified_name, symbol_key, signature)."
+                    .to_string(),
                 "get_symbol - Fetch a symbol by its key."
                     .to_string(),
                 "list_doc_blocks - List doc blocks for a symbol."
@@ -55,6 +57,8 @@ impl Default for HelpCommands {
                 "search_doc_blocks - Search doc blocks by text fragment."
                     .to_string(),
                 "get_symbol_adjacency - Fetch a symbol along with relation edges and related symbols."
+                    .to_string(),
+                "audit_project_completeness - Report per-project counts for symbols/docs/relations and missing source metadata."
                     .to_string(),
                 "dotnet_help - Describes how .net solutions are processed and ingested."
                     .to_string(),

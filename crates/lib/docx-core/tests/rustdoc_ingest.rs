@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use docx_core::control::{DocxControlPlane, RustdocIngestRequest};
+use docx_core::control::data::SearchSymbolsAdvancedRequest;
+use docx_core::control::{DocxControlPlane, RustdocIngestReport, RustdocIngestRequest};
 use docx_core::parsers::{RustdocJsonParser, RustdocParseOptions, RustdocParseOutput};
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
@@ -38,25 +39,22 @@ async fn build_control_plane(db_name: &str) -> DocxControlPlane<Db> {
     DocxControlPlane::new(db)
 }
 
-#[tokio::test]
-async fn ingest_rustdoc_fixture_roundtrip() {
-    let project_id = "docx-store";
-    let ingest_id = "fixture";
+async fn ingest_fixture(
+    db_name: &str,
+    project_id: &str,
+    ingest_id: &str,
+) -> (
+    DocxControlPlane<Db>,
+    RustdocParseOutput,
+    RustdocIngestReport,
+) {
     let json = load_fixture();
     let parsed = parse_fixture(project_id, ingest_id);
-
-    assert!(!parsed.symbols.is_empty(), "fixture should contain symbols");
-    let named_symbol = parsed
-        .symbols
-        .iter()
-        .find(|symbol| symbol.name.is_some())
-        .expect("fixture should contain a named symbol");
-
-    let control = build_control_plane("fixture").await;
+    let control = build_control_plane(db_name).await;
     let report = control
         .ingest_rustdoc_json(RustdocIngestRequest {
             project_id: project_id.to_string(),
-            json: Some(json.clone()),
+            json: Some(json),
             json_path: None,
             ingest_id: Some(ingest_id.to_string()),
             source_path: Some("target/doc/docx_store.json".to_string()),
@@ -66,6 +64,21 @@ async fn ingest_rustdoc_fixture_roundtrip() {
         })
         .await
         .expect("ingest should succeed");
+    (control, parsed, report)
+}
+
+#[tokio::test]
+async fn ingest_rustdoc_fixture_roundtrip() {
+    let project_id = "docx-store";
+    let ingest_id = "fixture";
+    let (control, parsed, report) = ingest_fixture("fixture", project_id, ingest_id).await;
+
+    assert!(!parsed.symbols.is_empty(), "fixture should contain symbols");
+    let named_symbol = parsed
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.is_some())
+        .expect("fixture should contain a named symbol");
 
     assert_eq!(report.crate_name, parsed.crate_name);
     assert_eq!(report.symbol_count, parsed.symbols.len());
@@ -109,20 +122,151 @@ async fn ingest_rustdoc_fixture_roundtrip() {
             "adjacency should include doc sources when ingest metadata exists"
         );
     }
+    assert_eq!(
+        adjacency.doc_sources.len(),
+        adjacency.hydration_summary.deduped_total,
+        "hydration summary should reflect final deduped source count"
+    );
 
-    if let Some(block) = parsed
+    let block = parsed
         .doc_blocks
         .iter()
-        .find(|block| block.symbol_key.is_some())
-    {
-        let symbol_key = block
-            .symbol_key
-            .as_ref()
-            .expect("doc block should carry symbol key");
-        let blocks = control
-            .list_doc_blocks(project_id, symbol_key, Some(ingest_id))
-            .await
-            .expect("doc block lookup should succeed");
-        assert!(!blocks.is_empty(), "doc blocks should be stored for symbol");
-    }
+        .find(|item| item.symbol_key.is_some())
+        .expect("fixture should include at least one symbol-attached doc block");
+    let symbol_key = block
+        .symbol_key
+        .as_ref()
+        .expect("doc block should carry symbol key");
+    let blocks = control
+        .list_doc_blocks(project_id, symbol_key, Some(ingest_id))
+        .await
+        .expect("doc block lookup should succeed");
+    assert!(!blocks.is_empty(), "doc blocks should be stored for symbol");
+}
+
+#[tokio::test]
+async fn adjacency_hydrates_doc_sources_from_observed_in_edges() {
+    let project_id = "docx-store";
+    let ingest_id = "fixture";
+    let (control, parsed, _) = ingest_fixture("fixture-observed", project_id, ingest_id).await;
+
+    let symbol_keys_with_docs = parsed
+        .doc_blocks
+        .iter()
+        .filter_map(|block| block.symbol_key.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    let symbol_without_docs = parsed
+        .symbols
+        .iter()
+        .find(|symbol| !symbol_keys_with_docs.contains(symbol.symbol_key.as_str()))
+        .expect("fixture should include at least one symbol without doc blocks");
+    let observed_only_adjacency = control
+        .get_symbol_adjacency(project_id, &symbol_without_docs.symbol_key, 50)
+        .await
+        .expect("adjacency lookup for observed-only symbol should succeed");
+    assert!(
+        observed_only_adjacency.doc_blocks.is_empty(),
+        "fixture symbol selected for observed-only check should have zero doc blocks"
+    );
+    assert!(
+        !observed_only_adjacency.doc_sources.is_empty(),
+        "adjacency should hydrate doc sources from observed_in edges"
+    );
+    assert!(
+        observed_only_adjacency.hydration_summary.from_observed_in > 0,
+        "observed_in hydration should contribute doc sources"
+    );
+}
+
+#[tokio::test]
+async fn advanced_search_and_completeness_audit_work() {
+    let project_id = "docx-store";
+    let ingest_id = "fixture";
+    let (control, parsed, _) = ingest_fixture("fixture-audit", project_id, ingest_id).await;
+    let named_symbol = parsed
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.is_some())
+        .expect("fixture should contain a named symbol");
+
+    let advanced_search = control
+        .search_symbols_advanced(
+            project_id,
+            SearchSymbolsAdvancedRequest {
+                symbol_key: Some(named_symbol.symbol_key.clone()),
+                ..SearchSymbolsAdvancedRequest::default()
+            },
+            10,
+        )
+        .await
+        .expect("advanced symbol search should succeed");
+    assert_eq!(
+        advanced_search.total_returned, 1,
+        "exact symbol_key filter should return a single symbol"
+    );
+    assert_eq!(
+        advanced_search.symbols[0].symbol_key, named_symbol.symbol_key,
+        "exact symbol_key filter should return the expected symbol"
+    );
+
+    let completeness = control
+        .audit_project_completeness(project_id)
+        .await
+        .expect("project completeness audit should succeed");
+    assert_eq!(
+        completeness.symbol_count,
+        parsed.symbols.len(),
+        "completeness audit should report ingested symbol count"
+    );
+    assert_eq!(
+        completeness.doc_block_count,
+        parsed.doc_blocks.len(),
+        "completeness audit should report ingested doc block count"
+    );
+    assert_eq!(
+        completeness.doc_source_count, 1,
+        "single ingest fixture should create one doc source"
+    );
+    assert!(
+        completeness.symbols_with_observed_in_count > 0,
+        "completeness audit should report observed_in coverage"
+    );
+    assert!(
+        completeness
+            .relation_counts
+            .get("observed_in")
+            .copied()
+            .unwrap_or_default()
+            > 0,
+        "relation coverage should include observed_in edges"
+    );
+}
+
+#[tokio::test]
+async fn get_symbol_is_project_scoped() {
+    let project_id = "docx-store";
+    let ingest_id = "fixture";
+    let (control, parsed, _) = ingest_fixture("fixture-project-scope", project_id, ingest_id).await;
+    let symbol = parsed
+        .symbols
+        .first()
+        .expect("fixture should include at least one symbol");
+
+    let cross_project_symbol = control
+        .get_symbol("unrelated-project", &symbol.symbol_key)
+        .await
+        .expect("cross-project symbol lookup should not error");
+    assert!(
+        cross_project_symbol.is_none(),
+        "symbol lookup should not leak across project boundaries"
+    );
+
+    let cross_project_adjacency = control
+        .get_symbol_adjacency("unrelated-project", &symbol.symbol_key, 50)
+        .await
+        .expect("cross-project adjacency lookup should not error");
+    assert!(
+        cross_project_adjacency.symbol.is_none(),
+        "adjacency lookup should return empty payload for wrong project"
+    );
 }

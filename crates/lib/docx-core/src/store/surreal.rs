@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, str::FromStr, sync::Arc};
+use std::{collections::HashSet, error::Error, fmt, str::FromStr, sync::Arc};
 
 use docx_store::models::{DocBlock, DocChunk, DocSource, Ingest, Project, RelationRecord, Symbol};
 use docx_store::schema::{
@@ -135,7 +135,27 @@ impl<C: Connection> SurrealDocStore<C> {
             .bind(("record", record))
             .await?;
         let records: Vec<IngestRow> = response.take(0)?;
-        Ok(records.into_iter().next().map(Ingest::from))
+        if let Some(ingest) = records.into_iter().next().map(Ingest::from) {
+            return Ok(Some(ingest));
+        }
+        if ingest_id.contains("::") {
+            return Ok(None);
+        }
+
+        let mut response = self
+            .db
+            .query("SELECT * FROM ingest WHERE extra.requested_ingest_id = $requested_id;")
+            .bind(("requested_id", ingest_id.to_string()))
+            .await?;
+        let records: Vec<IngestRow> = response.take(0)?;
+        let mut rows = records.into_iter();
+        let first = rows.next();
+        if rows.next().is_some() {
+            return Err(StoreError::InvalidInput(format!(
+                "ingest_id '{ingest_id}' is ambiguous; use project-scoped ingest id"
+            )));
+        }
+        Ok(first.map(Ingest::from))
     }
 
     /// Lists projects up to the provided limit.
@@ -196,10 +216,16 @@ impl<C: Connection> SurrealDocStore<C> {
     /// Returns `StoreError` if the database write fails.
     pub async fn create_ingest(&self, mut ingest: Ingest) -> StoreResult<Ingest> {
         self.ensure_schema().await?;
-        let id = ingest
-            .id
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let provided_id = ingest.id.clone();
+        let id = provided_id.as_ref().map_or_else(
+            || Uuid::new_v4().to_string(),
+            |value| make_scoped_ingest_id(&ingest.project_id, value),
+        );
+        if let Some(provided_id) = provided_id
+            && provided_id != id
+        {
+            ingest.extra = Some(merge_ingest_extra(ingest.extra.take(), &provided_id));
+        }
         ingest.id = Some(id.clone());
         let record = RecordId::new(TABLE_INGEST, id.as_str());
         self.db
@@ -436,6 +462,74 @@ impl<C: Connection> SurrealDocStore<C> {
         Ok(records)
     }
 
+    /// Searches symbols with multiple optional filters.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the limit is invalid or the database query fails.
+    pub async fn search_symbols_advanced(
+        &self,
+        project_id: &str,
+        name: Option<&str>,
+        qualified_name: Option<&str>,
+        symbol_key: Option<&str>,
+        signature: Option<&str>,
+        limit: usize,
+    ) -> StoreResult<Vec<Symbol>> {
+        self.ensure_schema().await?;
+        let project_id = project_id.to_string();
+        let limit = limit_to_i64(limit)?;
+
+        let mut clauses = vec!["project_id = $project_id".to_string()];
+        if symbol_key.is_some() {
+            clauses.push("symbol_key = $symbol_key".to_string());
+        }
+        if name.is_some() {
+            clauses.push(
+                "name != NONE AND string::contains(string::lowercase(name), string::lowercase($name))"
+                    .to_string(),
+            );
+        }
+        if qualified_name.is_some() {
+            clauses.push(
+                "qualified_name != NONE AND string::contains(string::lowercase(qualified_name), string::lowercase($qualified_name))"
+                    .to_string(),
+            );
+        }
+        if signature.is_some() {
+            clauses.push(
+                "signature != NONE AND string::contains(string::lowercase(signature), string::lowercase($signature))"
+                    .to_string(),
+            );
+        }
+
+        let query = format!(
+            "SELECT *, record::id(id) AS id FROM symbol WHERE {} LIMIT $limit;",
+            clauses.join(" AND ")
+        );
+
+        let mut request = self
+            .db
+            .query(query)
+            .bind(("project_id", project_id))
+            .bind(("limit", limit));
+        if let Some(value) = symbol_key {
+            request = request.bind(("symbol_key", value.to_string()));
+        }
+        if let Some(value) = name {
+            request = request.bind(("name", value.to_string()));
+        }
+        if let Some(value) = qualified_name {
+            request = request.bind(("qualified_name", value.to_string()));
+        }
+        if let Some(value) = signature {
+            request = request.bind(("signature", value.to_string()));
+        }
+
+        let mut response = request.await?;
+        let records: Vec<Symbol> = response.take(0)?;
+        Ok(records)
+    }
+
     /// Lists distinct symbol kinds for a project.
     ///
     /// # Errors
@@ -586,7 +680,10 @@ impl<C: Connection> SurrealDocStore<C> {
             return Ok(Vec::new());
         }
         let project_id = project_id.to_string();
-        let ingest_ids = ingest_ids.to_vec();
+        let ingest_ids = normalize_ingest_filter_ids(project_id.as_str(), ingest_ids);
+        if ingest_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let query =
             "SELECT * FROM doc_source WHERE project_id = $project_id AND ingest_id IN $ingest_ids;";
         let mut response = self
@@ -597,6 +694,128 @@ impl<C: Connection> SurrealDocStore<C> {
             .await?;
         let records: Vec<DocSourceRow> = response.take(0)?;
         Ok(records.into_iter().map(DocSource::from).collect())
+    }
+
+    /// Lists document sources by explicit source ids.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
+    pub async fn list_doc_sources_by_ids(
+        &self,
+        project_id: &str,
+        doc_source_ids: &[String],
+    ) -> StoreResult<Vec<DocSource>> {
+        self.ensure_schema().await?;
+        if doc_source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let project_id = project_id.to_string();
+        let mut unique_ids = HashSet::new();
+        let records: Vec<RecordId> = doc_source_ids
+            .iter()
+            .filter(|value| !value.is_empty())
+            .filter(|value| unique_ids.insert((*value).clone()))
+            .map(|value| RecordId::new(TABLE_DOC_SOURCE, value.as_str()))
+            .collect();
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = "SELECT * FROM doc_source WHERE project_id = $project_id AND id IN $records;";
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("project_id", project_id))
+            .bind(("records", records))
+            .await?;
+        let records: Vec<DocSourceRow> = response.take(0)?;
+        Ok(records.into_iter().map(DocSource::from).collect())
+    }
+
+    /// Counts table rows for a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the input is invalid or the database query fails.
+    pub async fn count_rows_for_project(
+        &self,
+        table: &str,
+        project_id: &str,
+    ) -> StoreResult<usize> {
+        self.ensure_schema().await?;
+        ensure_identifier(table, "table")?;
+        let query = format!(
+            "SELECT count() AS count FROM {table} WHERE project_id = $project_id GROUP ALL;"
+        );
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("project_id", project_id.to_string()))
+            .await?;
+        let rows: Vec<CountRow> = response.take(0)?;
+        Ok(rows
+            .first()
+            .and_then(|row| usize::try_from(row.count).ok())
+            .unwrap_or(0))
+    }
+
+    /// Counts symbols in a project where a given field is missing (`NONE`).
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the input is invalid or the database query fails.
+    pub async fn count_symbols_missing_field(
+        &self,
+        project_id: &str,
+        field: &str,
+    ) -> StoreResult<usize> {
+        self.ensure_schema().await?;
+        ensure_identifier(field, "field")?;
+        let query = format!(
+            "SELECT count() AS count FROM symbol WHERE project_id = $project_id AND {field} = NONE GROUP ALL;"
+        );
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("project_id", project_id.to_string()))
+            .await?;
+        let rows: Vec<CountRow> = response.take(0)?;
+        Ok(rows
+            .first()
+            .and_then(|row| usize::try_from(row.count).ok())
+            .unwrap_or(0))
+    }
+
+    /// Lists non-null symbol keys attached to doc blocks for a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
+    pub async fn list_doc_block_symbol_keys(&self, project_id: &str) -> StoreResult<Vec<String>> {
+        self.ensure_schema().await?;
+        let mut response = self
+            .db
+            .query(
+                "SELECT symbol_key FROM doc_block WHERE project_id = $project_id AND symbol_key != NONE;",
+            )
+            .bind(("project_id", project_id.to_string()))
+            .await?;
+        let rows: Vec<DocBlockSymbolKeyRow> = response.take(0)?;
+        Ok(rows.into_iter().map(|row| row.symbol_key).collect())
+    }
+
+    /// Lists observed-in source relation endpoint ids (`symbol:<id>`) for a project.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
+    pub async fn list_observed_in_symbol_refs(&self, project_id: &str) -> StoreResult<Vec<String>> {
+        self.ensure_schema().await?;
+        let mut response = self
+            .db
+            .query("SELECT in AS symbol_id FROM observed_in WHERE project_id = $project_id;")
+            .bind(("project_id", project_id.to_string()))
+            .await?;
+        let rows: Vec<ObservedInSymbolRow> = response.take(0)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| record_id_to_record_ref(row.symbol_id))
+            .collect())
     }
 
     /// Fetches a document source by id.
@@ -628,23 +847,31 @@ impl<C: Connection> SurrealDocStore<C> {
         self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let limit = limit_to_i64(limit)?;
-        let (query, binds) = ingest_id.map_or(
+        let (query, ingest_ids) = ingest_id.map_or(
             (
                 "SELECT * FROM doc_source WHERE project_id = $project_id ORDER BY source_modified_at DESC LIMIT $limit;",
                 None,
             ),
-            |ingest_id| (
-                "SELECT * FROM doc_source WHERE project_id = $project_id AND ingest_id = $ingest_id ORDER BY source_modified_at DESC LIMIT $limit;",
-                Some(ingest_id.to_string()),
-            ),
+            |ingest_id| {
+                (
+                    "SELECT * FROM doc_source WHERE project_id = $project_id AND ingest_id IN $ingest_ids ORDER BY source_modified_at DESC LIMIT $limit;",
+                    Some(normalize_ingest_filter_ids(
+                        project_id.as_str(),
+                        &[ingest_id.to_string()],
+                    )),
+                )
+            },
         );
+        if ingest_ids.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
         let response = self
             .db
             .query(query)
             .bind(("project_id", project_id))
             .bind(("limit", limit));
-        let mut response = if let Some(ingest_id) = binds {
-            response.bind(("ingest_id", ingest_id)).await?
+        let mut response = if let Some(ingest_ids) = ingest_ids {
+            response.bind(("ingest_ids", ingest_ids)).await?
         } else {
             response.await?
         };
@@ -988,6 +1215,21 @@ struct SymbolKindRow {
     kind: Option<String>,
 }
 
+#[derive(serde::Deserialize, SurrealValue)]
+struct CountRow {
+    count: i64,
+}
+
+#[derive(serde::Deserialize, SurrealValue)]
+struct DocBlockSymbolKeyRow {
+    symbol_key: String,
+}
+
+#[derive(serde::Deserialize, SurrealValue)]
+struct ObservedInSymbolRow {
+    symbol_id: RecordId,
+}
+
 fn normalize_pattern(pattern: &str) -> Option<String> {
     let trimmed = pattern.trim().to_lowercase();
     if trimmed.is_empty() {
@@ -1048,6 +1290,54 @@ fn glob_to_regex_body(pattern: &str) -> String {
     escaped
 }
 
+fn make_scoped_ingest_id(project_id: &str, ingest_id: &str) -> String {
+    let prefix = format!("{project_id}::");
+    if ingest_id.starts_with(prefix.as_str()) {
+        ingest_id.to_string()
+    } else {
+        format!("{project_id}::{ingest_id}")
+    }
+}
+
+fn normalize_ingest_filter_ids(project_id: &str, ingest_ids: &[String]) -> Vec<String> {
+    let scoped_prefix = format!("{project_id}::");
+    let mut unique = HashSet::new();
+    let mut normalized = Vec::new();
+    for ingest_id in ingest_ids {
+        let trimmed = ingest_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if unique.insert(trimmed.to_string()) {
+            normalized.push(trimmed.to_string());
+        }
+        if let Some(stripped) = trimmed.strip_prefix(scoped_prefix.as_str())
+            && !stripped.is_empty()
+            && unique.insert(stripped.to_string())
+        {
+            normalized.push(stripped.to_string());
+        }
+    }
+    normalized
+}
+
+fn merge_ingest_extra(existing: Option<Value>, requested_ingest_id: &str) -> Value {
+    let mut object = match existing {
+        Some(Value::Object(map)) => map,
+        Some(value) => {
+            let mut map = serde_json::Map::new();
+            map.insert("value".to_string(), value);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    object.insert(
+        "requested_ingest_id".to_string(),
+        Value::String(requested_ingest_id.to_string()),
+    );
+    Value::Object(object)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,7 +1383,144 @@ mod tests {
             .expect("failed to list ingests");
 
         assert_eq!(ingests.len(), 1);
-        assert_eq!(ingests[0].id.as_deref(), Some("ingest-1"));
+        assert_eq!(ingests[0].id.as_deref(), Some("project::ingest-1"));
+        assert_eq!(
+            ingests[0]
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("requested_ingest_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("ingest-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_ingests_scopes_same_ingest_id_per_project() {
+        let store = build_store().await;
+        let left = Ingest {
+            id: Some("shared".to_string()),
+            project_id: "project-left".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+        let right = Ingest {
+            id: Some("shared".to_string()),
+            project_id: "project-right".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+
+        store
+            .create_ingest(left)
+            .await
+            .expect("failed to create left ingest");
+        store
+            .create_ingest(right)
+            .await
+            .expect("failed to create right ingest");
+
+        let left_ingests = store
+            .list_ingests("project-left", 10)
+            .await
+            .expect("failed to list left ingests");
+        let right_ingests = store
+            .list_ingests("project-right", 10)
+            .await
+            .expect("failed to list right ingests");
+
+        assert_eq!(left_ingests.len(), 1);
+        assert_eq!(right_ingests.len(), 1);
+        assert_eq!(left_ingests[0].id.as_deref(), Some("project-left::shared"));
+        assert_eq!(
+            right_ingests[0].id.as_deref(),
+            Some("project-right::shared")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_ingest_supports_requested_id_when_unique() {
+        let store = build_store().await;
+        let ingest = Ingest {
+            id: Some("requested".to_string()),
+            project_id: "project".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+
+        store
+            .create_ingest(ingest)
+            .await
+            .expect("failed to create ingest");
+        let found = store
+            .get_ingest("requested")
+            .await
+            .expect("failed to lookup ingest by requested id");
+        assert_eq!(
+            found.and_then(|row| row.id),
+            Some("project::requested".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_ingest_rejects_ambiguous_requested_id() {
+        let store = build_store().await;
+        let left = Ingest {
+            id: Some("requested".to_string()),
+            project_id: "project-left".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+        let right = Ingest {
+            id: Some("requested".to_string()),
+            project_id: "project-right".to_string(),
+            git_commit: None,
+            git_branch: None,
+            git_tag: None,
+            project_version: None,
+            source_modified_at: None,
+            ingested_at: None,
+            extra: None,
+        };
+
+        store
+            .create_ingest(left)
+            .await
+            .expect("failed to create left ingest");
+        store
+            .create_ingest(right)
+            .await
+            .expect("failed to create right ingest");
+
+        let error = store
+            .get_ingest("requested")
+            .await
+            .expect_err("ambiguous requested id should error");
+        assert!(
+            error
+                .to_string()
+                .contains("ambiguous; use project-scoped ingest id"),
+            "error should explain scoped ingest id requirement"
+        );
     }
 
     #[tokio::test]
@@ -1123,6 +1550,109 @@ mod tests {
 
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].id.as_deref(), Some("source-1"));
+    }
+
+    #[tokio::test]
+    async fn list_doc_sources_accepts_scoped_ingest_filter() {
+        let store = build_store().await;
+        let source = DocSource {
+            id: Some("source-1".to_string()),
+            project_id: "project".to_string(),
+            ingest_id: Some("shared".to_string()),
+            language: None,
+            source_kind: None,
+            path: None,
+            tool_version: None,
+            hash: None,
+            source_modified_at: None,
+            extra: None,
+        };
+
+        store
+            .create_doc_source(source)
+            .await
+            .expect("failed to create doc source");
+        let sources = store
+            .list_doc_sources("project", &["project::shared".to_string()])
+            .await
+            .expect("failed to list doc sources with scoped ingest id");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id.as_deref(), Some("source-1"));
+    }
+
+    #[tokio::test]
+    async fn list_doc_sources_by_project_accepts_scoped_ingest_filter() {
+        let store = build_store().await;
+        let source = DocSource {
+            id: Some("source-1".to_string()),
+            project_id: "project".to_string(),
+            ingest_id: Some("shared".to_string()),
+            language: None,
+            source_kind: None,
+            path: None,
+            tool_version: None,
+            hash: None,
+            source_modified_at: None,
+            extra: None,
+        };
+
+        store
+            .create_doc_source(source)
+            .await
+            .expect("failed to create doc source");
+        let sources = store
+            .list_doc_sources_by_project("project", Some("project::shared"), 10)
+            .await
+            .expect("failed to list doc sources by project with scoped ingest id");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id.as_deref(), Some("source-1"));
+    }
+
+    #[tokio::test]
+    async fn list_doc_sources_by_ids_filters_requested_ids() {
+        let store = build_store().await;
+        let source_left = DocSource {
+            id: Some("source-left".to_string()),
+            project_id: "project".to_string(),
+            ingest_id: Some("ingest-1".to_string()),
+            language: None,
+            source_kind: None,
+            path: None,
+            tool_version: None,
+            hash: None,
+            source_modified_at: None,
+            extra: None,
+        };
+        let source_right = DocSource {
+            id: Some("source-right".to_string()),
+            project_id: "project".to_string(),
+            ingest_id: Some("ingest-1".to_string()),
+            language: None,
+            source_kind: None,
+            path: None,
+            tool_version: None,
+            hash: None,
+            source_modified_at: None,
+            extra: None,
+        };
+
+        store
+            .create_doc_source(source_left)
+            .await
+            .expect("failed to create left doc source");
+        store
+            .create_doc_source(source_right)
+            .await
+            .expect("failed to create right doc source");
+
+        let results = store
+            .list_doc_sources_by_ids("project", &["source-right".to_string()])
+            .await
+            .expect("failed to list doc sources by ids");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id.as_deref(), Some("source-right"));
     }
 
     fn build_symbol(project_id: &str, id: &str) -> Symbol {
@@ -1200,6 +1730,40 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].in_is_record);
         assert!(rows[0].out_is_record);
+    }
+
+    #[tokio::test]
+    async fn search_symbols_advanced_supports_exact_symbol_key() {
+        let store = build_store().await;
+        let mut alpha = build_symbol("project", "rust|project|alpha");
+        alpha.name = Some("alpha".to_string());
+        alpha.qualified_name = Some("crate::alpha".to_string());
+        let mut beta = build_symbol("project", "rust|project|beta");
+        beta.name = Some("beta".to_string());
+        beta.qualified_name = Some("crate::beta".to_string());
+
+        store
+            .upsert_symbol(alpha.clone())
+            .await
+            .expect("failed to create alpha");
+        store
+            .upsert_symbol(beta)
+            .await
+            .expect("failed to create beta");
+
+        let results = store
+            .search_symbols_advanced(
+                "project",
+                None,
+                None,
+                Some(alpha.symbol_key.as_str()),
+                None,
+                10,
+            )
+            .await
+            .expect("advanced search by symbol key should succeed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol_key, alpha.symbol_key);
     }
 
     #[tokio::test]

@@ -7,6 +7,8 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
 
+use docx_core::control::data::SearchSymbolsAdvancedRequest;
+
 use crate::{DocxMcp, helpers};
 
 /// Parameters for listing symbol kinds in a project.
@@ -67,6 +69,25 @@ pub struct SearchDocBlocksParams {
     pub project_id: String,
     pub text: String,
     pub limit: Option<usize>,
+}
+
+/// Parameters for searching symbols with optional exact/fuzzy filters.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SearchSymbolsAdvancedParams {
+    pub solution: String,
+    pub project_id: String,
+    pub name: Option<String>,
+    pub qualified_name: Option<String>,
+    pub symbol_key: Option<String>,
+    pub signature: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// Parameters for auditing project completeness and relation coverage.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AuditProjectCompletenessParams {
+    pub solution: String,
+    pub project_id: String,
 }
 
 #[tool_router(router = tool_router_data, vis = "pub")]
@@ -156,6 +177,28 @@ impl<C: Connection> DocxMcp<C> {
         Ok(CallToolResult::success(vec![Content::json(symbols)?]))
     }
 
+    #[tool(
+        description = "Search symbols with optional filters (name, qualified_name, symbol_key, signature)."
+    )]
+    async fn search_symbols_advanced(
+        &self,
+        Parameters(params): Parameters<SearchSymbolsAdvancedParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let limit = params.limit.unwrap_or(200).clamp(1, 1000);
+        let control = self.control_for_solution(&params.solution).await?;
+        let filters = SearchSymbolsAdvancedRequest {
+            name: params.name,
+            qualified_name: params.qualified_name,
+            symbol_key: params.symbol_key,
+            signature: params.signature,
+        };
+        let result = control
+            .search_symbols_advanced(&params.project_id, filters, limit)
+            .await
+            .map_err(helpers::map_err)?;
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
+    }
+
     #[tool(description = "Search doc blocks by text fragment.")]
     async fn search_doc_blocks(
         &self,
@@ -168,5 +211,20 @@ impl<C: Connection> DocxMcp<C> {
             .await
             .map_err(helpers::map_err)?;
         Ok(CallToolResult::success(vec![Content::json(blocks)?]))
+    }
+
+    #[tool(
+        description = "Audit per-project completeness for symbols, docs, and relation coverage."
+    )]
+    async fn audit_project_completeness(
+        &self,
+        Parameters(params): Parameters<AuditProjectCompletenessParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let control = self.control_for_solution(&params.solution).await?;
+        let audit = control
+            .audit_project_completeness(&params.project_id)
+            .await
+            .map_err(helpers::map_err)?;
+        Ok(CallToolResult::success(vec![Content::json(audit)?]))
     }
 }
