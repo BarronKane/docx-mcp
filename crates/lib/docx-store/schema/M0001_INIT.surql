@@ -133,14 +133,15 @@ DEFINE INDEX IF NOT EXISTS doc_block_project_id ON TABLE doc_block COLUMNS proje
 DEFINE INDEX IF NOT EXISTS doc_block_symbol_index ON TABLE doc_block COLUMNS project_id, symbol_key, ingest_id;
 DEFINE INDEX IF NOT EXISTS doc_block_doc_hash_index ON TABLE doc_block COLUMNS project_id, symbol_key, doc_hash;
 
--- NOTE: Full-text search (SEARCH ANALYZER ... BM25) is not supported by the
--- kv-mem engine used in tests. When running against a production SurrealDB
--- instance that supports FTS, uncomment and apply the following:
---
--- DEFINE ANALYZER IF NOT EXISTS docx_search TOKENIZERS blank,class FILTERS lowercase,snowball(english);
--- DEFINE INDEX IF NOT EXISTS doc_block_search_idx ON TABLE doc_block
---     FIELDS summary, remarks, returns, errors, panics, safety
---     SEARCH ANALYZER docx_search BM25;
+-- NOTE: Full-text search (SEARCH ANALYZER ... BM25) may not be supported by
+-- all SurrealDB engines (e.g. kv-mem). The runtime applies this block
+-- opportunistically and continues if the backend reports it as unsupported.
+-- OPTIONAL_DOC_BLOCK_FTS_START
+DEFINE ANALYZER IF NOT EXISTS docx_search TOKENIZERS blank,class FILTERS lowercase,snowball(english);
+DEFINE INDEX IF NOT EXISTS doc_block_search_idx ON TABLE doc_block
+    FIELDS summary, remarks, returns, errors, panics, safety
+    SEARCH ANALYZER docx_search BM25;
+-- OPTIONAL_DOC_BLOCK_FTS_END
 
 -- ============================================================================
 

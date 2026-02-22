@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Lance Wallis <walance.pvas.me>"]
 edition = "2024"
 repository = "https://github.com/BarronKane/docx-mcp"

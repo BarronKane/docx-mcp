@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::Value;
 use surrealdb::types::{RecordId, RecordIdKey, Regex, SurrealValue, Table, ToSql};
 use surrealdb::{Connection, Surreal};
+use tracing::warn;
 use uuid::Uuid;
 
 /// Errors returned by the `SurrealDB` store implementation.
@@ -36,6 +37,9 @@ impl From<surrealdb::Error> for StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+const OPTIONAL_DOC_BLOCK_FTS_START: &str = "-- OPTIONAL_DOC_BLOCK_FTS_START";
+const OPTIONAL_DOC_BLOCK_FTS_END: &str = "-- OPTIONAL_DOC_BLOCK_FTS_END";
 
 /// Store implementation backed by `SurrealDB`.
 pub struct SurrealDocStore<C: Connection> {
@@ -77,7 +81,18 @@ impl<C: Connection> SurrealDocStore<C> {
     async fn ensure_schema(&self) -> StoreResult<()> {
         self.schema_ready
             .get_or_try_init(|| async {
-                self.db.query(SCHEMA_BOOTSTRAP_SURQL).await?.check()?;
+                let (required_schema, optional_doc_block_fts) =
+                    split_optional_doc_block_fts_schema(SCHEMA_BOOTSTRAP_SURQL)?;
+                apply_schema(self.db.as_ref(), required_schema.as_str()).await?;
+                if let Some(optional_doc_block_fts) = optional_doc_block_fts
+                    && let Err(error) =
+                        apply_schema(self.db.as_ref(), optional_doc_block_fts.as_str()).await
+                {
+                    warn!(
+                        error = %error,
+                        "optional doc_block full-text schema was skipped"
+                    );
+                }
                 Ok::<(), StoreError>(())
             })
             .await?;
@@ -1230,6 +1245,72 @@ struct ObservedInSymbolRow {
     symbol_id: RecordId,
 }
 
+async fn apply_schema<C: Connection>(db: &Surreal<C>, schema: &str) -> StoreResult<()> {
+    db.query(schema).await?.check()?;
+    Ok(())
+}
+
+fn split_optional_doc_block_fts_schema(schema: &str) -> StoreResult<(String, Option<String>)> {
+    let mut required_schema = String::new();
+    let mut optional_schema = String::new();
+    let mut in_optional_block = false;
+    let mut found_optional_start = false;
+    let mut found_optional_end = false;
+
+    for line in schema.lines() {
+        let trimmed = line.trim();
+        if trimmed == OPTIONAL_DOC_BLOCK_FTS_START {
+            if in_optional_block || found_optional_start {
+                return Err(StoreError::InvalidInput(
+                    "schema optional FTS block start marker appears multiple times".to_string(),
+                ));
+            }
+            found_optional_start = true;
+            in_optional_block = true;
+            continue;
+        }
+        if trimmed == OPTIONAL_DOC_BLOCK_FTS_END {
+            if !in_optional_block {
+                return Err(StoreError::InvalidInput(
+                    "schema optional FTS block end marker appears before start".to_string(),
+                ));
+            }
+            found_optional_end = true;
+            in_optional_block = false;
+            continue;
+        }
+        if in_optional_block {
+            optional_schema.push_str(line);
+            optional_schema.push('\n');
+        } else {
+            required_schema.push_str(line);
+            required_schema.push('\n');
+        }
+    }
+
+    if in_optional_block {
+        return Err(StoreError::InvalidInput(
+            "schema optional FTS block start marker is missing a matching end marker".to_string(),
+        ));
+    }
+    if found_optional_start != found_optional_end {
+        return Err(StoreError::InvalidInput(
+            "schema optional FTS block markers are unbalanced".to_string(),
+        ));
+    }
+    if !found_optional_start {
+        return Ok((required_schema, None));
+    }
+
+    let optional_schema = optional_schema.trim();
+    if optional_schema.is_empty() {
+        return Err(StoreError::InvalidInput(
+            "schema optional FTS block is empty".to_string(),
+        ));
+    }
+    Ok((required_schema, Some(optional_schema.to_string())))
+}
+
 fn normalize_pattern(pattern: &str) -> Option<String> {
     let trimmed = pattern.trim().to_lowercase();
     if trimmed.is_empty() {
@@ -1356,6 +1437,39 @@ mod tests {
             .await
             .expect("failed to set namespace/db");
         SurrealDocStore::new(db)
+    }
+
+    #[test]
+    fn split_optional_doc_block_fts_schema_extracts_optional_block() {
+        let schema = "\
+DEFINE TABLE test SCHEMAFULL;\n\
+-- OPTIONAL_DOC_BLOCK_FTS_START\n\
+DEFINE ANALYZER IF NOT EXISTS docx_search TOKENIZERS blank,class FILTERS lowercase,snowball(english);\n\
+-- OPTIONAL_DOC_BLOCK_FTS_END\n\
+DEFINE INDEX test_idx ON TABLE test COLUMNS id;\n";
+        let (required, optional) =
+            split_optional_doc_block_fts_schema(schema).expect("split should succeed");
+        let optional = optional.expect("optional block should be extracted");
+        assert!(required.contains("DEFINE TABLE test SCHEMAFULL;"));
+        assert!(required.contains("DEFINE INDEX test_idx ON TABLE test COLUMNS id;"));
+        assert!(!required.contains("DEFINE ANALYZER"));
+        assert!(optional.contains("DEFINE ANALYZER IF NOT EXISTS docx_search"));
+    }
+
+    #[test]
+    fn split_optional_doc_block_fts_schema_rejects_unclosed_optional_block() {
+        let schema = "\
+DEFINE TABLE test SCHEMAFULL;\n\
+-- OPTIONAL_DOC_BLOCK_FTS_START\n\
+DEFINE ANALYZER IF NOT EXISTS docx_search TOKENIZERS blank,class FILTERS lowercase,snowball(english);\n";
+        let error = split_optional_doc_block_fts_schema(schema)
+            .expect_err("unclosed optional block should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("start marker is missing a matching end marker"),
+            "error should describe unmatched optional block markers"
+        );
     }
 
     #[tokio::test]
