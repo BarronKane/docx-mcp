@@ -4,17 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::{error::Error, fmt, path::Path};
 
 use docx_store::models::{
-    DocBlock,
-    DocExample,
-    DocParam,
-    DocSection,
-    DocTypeParam,
-    Param,
-    SeeAlso,
-    SourceId,
-    Symbol,
-    TypeParam,
-    TypeRef,
+    AttributeRef, DocBlock, DocExample, DocParam, DocSection, DocTypeParam, Param, SeeAlso,
+    SourceId, Symbol, TypeParam, TypeRef,
 };
 use docx_store::schema::{SOURCE_KIND_RUSTDOC_JSON, make_symbol_key};
 use serde::Deserialize;
@@ -50,8 +41,13 @@ impl RustdocParseOptions {
 #[derive(Debug, Clone)]
 pub struct RustdocParseOutput {
     pub crate_name: Option<String>,
+    pub crate_version: Option<String>,
+    pub format_version: u32,
+    pub includes_private: bool,
     pub symbols: Vec<Symbol>,
     pub doc_blocks: Vec<DocBlock>,
+    /// Maps type qualified names to trait paths they implement (same-crate only).
+    pub trait_impls: HashMap<String, Vec<String>>,
 }
 
 /// Error type for rustdoc JSON parse failures.
@@ -108,6 +104,9 @@ impl RustdocJsonParser {
         options: &RustdocParseOptions,
     ) -> Result<RustdocParseOutput, RustdocParseError> {
         let crate_doc: RustdocCrate = serde_json::from_str(json)?;
+        let crate_version = crate_doc.crate_version.clone();
+        let format_version = crate_doc.format_version;
+        let includes_private = crate_doc.includes_private;
         let root_id = crate_doc.root;
         let root_item = crate_doc
             .index
@@ -126,6 +125,8 @@ impl RustdocJsonParser {
             symbols: Vec::new(),
             doc_blocks: Vec::new(),
             seen: HashSet::new(),
+            used_symbol_keys: HashSet::new(),
+            trait_impls: HashMap::new(),
         };
 
         let mut module_path = Vec::new();
@@ -136,8 +137,12 @@ impl RustdocJsonParser {
 
         Ok(RustdocParseOutput {
             crate_name,
+            crate_version,
+            format_version,
+            includes_private,
             symbols: state.symbols,
             doc_blocks: state.doc_blocks,
+            trait_impls: state.trait_impls,
         })
     }
     /// Parses rustdoc JSON asynchronously using a blocking task.
@@ -168,6 +173,11 @@ impl RustdocJsonParser {
 #[derive(Debug, Deserialize)]
 struct RustdocCrate {
     root: u64,
+    crate_version: Option<String>,
+    #[serde(default)]
+    format_version: u32,
+    #[serde(default)]
+    includes_private: bool,
     index: HashMap<String, RustdocItem>,
     #[serde(default)]
     paths: HashMap<String, RustdocPath>,
@@ -179,9 +189,11 @@ struct RustdocItem {
     crate_id: u64,
     name: Option<String>,
     span: Option<RustdocSpan>,
-    visibility: Option<String>,
+    visibility: Option<Value>,
     docs: Option<String>,
     deprecation: Option<RustdocDeprecation>,
+    #[serde(default)]
+    attrs: Vec<Value>,
     inner: HashMap<String, Value>,
 }
 
@@ -210,6 +222,8 @@ struct ParserState<'a> {
     symbols: Vec<Symbol>,
     doc_blocks: Vec<DocBlock>,
     seen: HashSet<u64>,
+    used_symbol_keys: HashSet<String>,
+    trait_impls: HashMap<String, Vec<String>>,
 }
 impl ParserState<'_> {
     fn visit_module(&mut self, module_id: u64, module_path: &[String]) {
@@ -233,7 +247,9 @@ impl ParserState<'_> {
                 }
                 if is_inner_kind(&child, "module") {
                     let mut child_path = module_path.to_vec();
-                    if let Some(name) = child.name.as_ref() && !name.is_empty() {
+                    if let Some(name) = child.name.as_ref()
+                        && !name.is_empty()
+                    {
                         child_path.push(name.clone());
                     }
                     self.visit_module(child_id, &child_path);
@@ -293,7 +309,9 @@ impl ParserState<'_> {
             }
             Some("module") => {
                 let mut child_path = module_path.to_vec();
-                if let Some(name) = item.name.as_ref() && !name.is_empty() {
+                if let Some(name) = item.name.as_ref()
+                    && !name.is_empty()
+                {
                     child_path.push(name.clone());
                 }
                 self.visit_module(item_id, &child_path);
@@ -391,6 +409,17 @@ impl ParserState<'_> {
             let Some(impl_inner) = impl_item.inner.get("impl") else {
                 continue;
             };
+
+            // Detect trait implementations
+            if let Some(trait_ref) = impl_inner.get("trait")
+                && let Some(trait_path) = trait_ref.get("path").and_then(Value::as_str)
+            {
+                self.trait_impls
+                    .entry(owner_name.to_string())
+                    .or_default()
+                    .push(trait_path.to_string());
+            }
+
             let Some(items) = impl_inner.get("items").and_then(Value::as_array) else {
                 continue;
             };
@@ -415,7 +444,12 @@ impl ParserState<'_> {
         let name = item.name.clone().unwrap_or_default();
         let qualified_name = qualified_name_for_item(&name, module_path, owner_name);
 
-        let symbol_key = make_symbol_key("rust", &self.options.project_id, &qualified_name);
+        let symbol_key = make_unique_symbol_key(
+            &mut self.used_symbol_keys,
+            &self.options.project_id,
+            &qualified_name,
+            item.id,
+        );
         let doc_symbol_key = symbol_key.clone();
         self.id_to_path.insert(item.id, qualified_name.clone());
 
@@ -439,7 +473,13 @@ impl ParserState<'_> {
             col,
         };
 
-        let symbol = build_symbol(item, self.options, parts, kind_override, parsed_docs.as_ref());
+        let symbol = build_symbol(
+            item,
+            self.options,
+            parts,
+            kind_override,
+            parsed_docs.as_ref(),
+        );
         self.symbols.push(symbol);
 
         if let Some(parsed_docs) = parsed_docs {
@@ -451,18 +491,37 @@ impl ParserState<'_> {
     }
 
     fn get_item(&self, item_id: u64) -> Option<RustdocItem> {
-        self.crate_doc
-            .index
-            .get(&item_id.to_string())
-            .cloned()
+        self.crate_doc.index.get(&item_id.to_string()).cloned()
     }
 }
 
-fn qualified_name_for_item(
-    name: &str,
-    module_path: &[String],
-    owner_name: Option<&str>,
+fn make_unique_symbol_key(
+    used_symbol_keys: &mut HashSet<String>,
+    project_id: &str,
+    qualified_name: &str,
+    item_id: u64,
 ) -> String {
+    let base_key = make_symbol_key("rust", project_id, qualified_name);
+    if used_symbol_keys.insert(base_key.clone()) {
+        return base_key;
+    }
+
+    let mut candidate = format!("{base_key}#{item_id}");
+    if used_symbol_keys.insert(candidate.clone()) {
+        return candidate;
+    }
+
+    let mut ordinal: u32 = 1;
+    loop {
+        candidate = format!("{base_key}#{item_id}_{ordinal}");
+        if used_symbol_keys.insert(candidate.clone()) {
+            return candidate;
+        }
+        ordinal += 1;
+    }
+}
+
+fn qualified_name_for_item(name: &str, module_path: &[String], owner_name: Option<&str>) -> String {
     owner_name.map_or_else(
         || {
             if module_path.is_empty() {
@@ -526,11 +585,7 @@ fn build_symbol(
         col,
     } = parts;
 
-    let name_value = if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    };
+    let name_value = if name.is_empty() { None } else { Some(name) };
     let qualified_value = if qualified_name.is_empty() {
         None
     } else {
@@ -542,13 +597,15 @@ fn build_symbol(
         project_id: options.project_id.clone(),
         language: Some(options.language.clone()),
         symbol_key,
-        kind: kind_override.map(str::to_string).or_else(|| inner_kind(item).map(str::to_string)),
+        kind: kind_override
+            .map(str::to_string)
+            .or_else(|| inner_kind(item).map(str::to_string)),
         name: name_value.clone(),
         qualified_name: qualified_value,
         display_name: name_value,
         signature,
         signature_hash: None,
-        visibility: item.visibility.clone(),
+        visibility: normalize_visibility(item.visibility.as_ref()),
         is_static: item_is_static(item),
         is_async: item_is_async(item),
         is_const: item_is_const(item),
@@ -561,13 +618,73 @@ fn build_symbol(
         return_type,
         params,
         type_params,
-        attributes: Vec::new(),
+        attributes: parse_attrs(&item.attrs),
         source_ids: vec![SourceId {
             kind: "rustdoc_id".to_string(),
             value: item.id.to_string(),
         }],
         doc_summary: parsed_docs.and_then(|docs| docs.summary.clone()),
         extra: None,
+    }
+}
+
+fn parse_attrs(attrs: &[Value]) -> Vec<AttributeRef> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            // attrs format: {"other": "#[attr = Inline(Hint)]"} or {"other": "#[must_use]"}
+            let raw = attr
+                .get("other")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| attr.as_str().unwrap_or(""));
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            // Strip outer #[...] or #![...]
+            let inner = raw
+                .strip_prefix("#![")
+                .or_else(|| raw.strip_prefix("#["))
+                .and_then(|rest| rest.strip_suffix(']'))
+                .unwrap_or(raw)
+                .trim();
+            if inner.is_empty() {
+                return None;
+            }
+            // Split name from arguments at first '(' or '='
+            let name = inner
+                .find(['(', '='])
+                .map_or(inner, |pos| inner[..pos].trim());
+            Some(AttributeRef {
+                name: name.to_string(),
+                args: Vec::new(),
+                target: None,
+            })
+        })
+        .collect()
+}
+
+fn normalize_visibility(visibility: Option<&Value>) -> Option<String> {
+    let value = visibility?;
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(map) => {
+            if map.contains_key("public") {
+                Some("public".to_string())
+            } else if map.contains_key("default") {
+                Some("default".to_string())
+            } else if map.contains_key("crate") {
+                Some("crate".to_string())
+            } else if let Some(restricted) = map.get("restricted") {
+                Some(restricted.get("path").and_then(Value::as_str).map_or_else(
+                    || "restricted".to_string(),
+                    |path| format!("restricted({path})"),
+                ))
+            } else {
+                Some(value.to_string())
+            }
+        }
+        _ => Some(value.to_string()),
     }
 }
 
@@ -734,15 +851,13 @@ fn parse_signature(
         }
     }
 
-    let return_type = sig
-        .get("output")
-        .and_then(|output| {
-            if output.is_null() {
-                None
-            } else {
-                Some(type_to_ref(output, state))
-            }
-        });
+    let return_type = sig.get("output").and_then(|output| {
+        if output.is_null() {
+            None
+        } else {
+            Some(type_to_ref(output, state))
+        }
+    });
 
     let signature = format_function_signature(name, &params, return_type.as_ref());
     (params, return_type, Some(signature))
@@ -761,8 +876,14 @@ fn parse_type_params(item: &RustdocItem) -> Vec<TypeParam> {
             .inner
             .get("struct")
             .and_then(|value| value.get("generics")),
-        "enum" => item.inner.get("enum").and_then(|value| value.get("generics")),
-        "trait" => item.inner.get("trait").and_then(|value| value.get("generics")),
+        "enum" => item
+            .inner
+            .get("enum")
+            .and_then(|value| value.get("generics")),
+        "trait" => item
+            .inner
+            .get("trait")
+            .and_then(|value| value.get("generics")),
         "type_alias" => item
             .inner
             .get("type_alias")
@@ -834,22 +955,22 @@ fn item_is_const(item: &RustdocItem) -> Option<bool> {
 fn item_is_static(item: &RustdocItem) -> Option<bool> {
     matches!(inner_kind(item), Some("static")).then_some(true)
 }
-fn format_function_signature(
-    name: &str,
-    params: &[Param],
-    output: Option<&TypeRef>,
-) -> String {
+fn format_function_signature(name: &str, params: &[Param], output: Option<&TypeRef>) -> String {
     let params = params
         .iter()
-        .map(|param| match param.type_ref.as_ref().and_then(|ty| ty.display.as_ref()) {
-            Some(ty) if !param.name.is_empty() => format!("{}: {ty}", param.name),
-            Some(ty) => ty.clone(),
-            None => param.name.clone(),
-        })
+        .map(
+            |param| match param.type_ref.as_ref().and_then(|ty| ty.display.as_ref()) {
+                Some(ty) if !param.name.is_empty() => format!("{}: {ty}", param.name),
+                Some(ty) => ty.clone(),
+                None => param.name.clone(),
+            },
+        )
         .collect::<Vec<_>>()
         .join(", ");
     let mut sig = format!("fn {name}({params})");
-    if let Some(output) = output.and_then(|ty| ty.display.as_ref()) && output != "()" {
+    if let Some(output) = output.and_then(|ty| ty.display.as_ref())
+        && output != "()"
+    {
         sig.push_str(" -> ");
         sig.push_str(output);
     }
@@ -918,7 +1039,9 @@ fn borrowed_ref_type(value: &Value, state: &ParserState<'_>) -> Option<String> {
         .get("is_mutable")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let inner = borrowed.get("type").and_then(|inner| type_to_string(inner, state))?;
+    let inner = borrowed
+        .get("type")
+        .and_then(|inner| type_to_string(inner, state))?;
     Some(if is_mut {
         format!("&mut {inner}")
     } else {
@@ -932,7 +1055,9 @@ fn raw_pointer_type(value: &Value, state: &ParserState<'_>) -> Option<String> {
         .get("is_mutable")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let inner = raw.get("type").and_then(|inner| type_to_string(inner, state))?;
+    let inner = raw
+        .get("type")
+        .and_then(|inner| type_to_string(inner, state))?;
     Some(if is_mut {
         format!("*mut {inner}")
     } else {
@@ -958,7 +1083,9 @@ fn slice_type(value: &Value, state: &ParserState<'_>) -> Option<String> {
 
 fn array_type(value: &Value, state: &ParserState<'_>) -> Option<String> {
     let array = value.get("array")?;
-    let inner = array.get("type").and_then(|inner| type_to_string(inner, state))?;
+    let inner = array
+        .get("type")
+        .and_then(|inner| type_to_string(inner, state))?;
     let len = array.get("len").and_then(Value::as_str).unwrap_or("");
     if len.is_empty() {
         Some(format!("[{inner}]"))
@@ -1057,7 +1184,10 @@ fn format_type_args(args: Option<&Value>, state: &ParserState<'_>) -> String {
     };
     let mut rendered = Vec::new();
     for item in items {
-        if let Some(ty) = item.get("type").and_then(|inner| type_to_string(inner, state)) {
+        if let Some(ty) = item
+            .get("type")
+            .and_then(|inner| type_to_string(inner, state))
+        {
             rendered.push(ty);
         } else if let Some(lifetime) = item.get("lifetime").and_then(Value::as_str) {
             rendered.push(lifetime.to_string());
@@ -1257,11 +1387,7 @@ fn split_summary_remarks(preamble: &str) -> (Option<String>, Option<String>) {
         .filter(|part| !part.is_empty());
     let summary = paragraphs.next().map(str::to_string);
     let rest = paragraphs.collect::<Vec<_>>().join("\n\n");
-    let remarks = if rest.is_empty() {
-        None
-    } else {
-        Some(rest)
-    };
+    let remarks = if rest.is_empty() { None } else { Some(rest) };
     (summary, remarks)
 }
 
@@ -1369,13 +1495,17 @@ fn split_param_item(item: &str) -> Option<(String, Option<String>)> {
     if name.is_empty() {
         return None;
     }
-    let description = description.map(|rest| rest.trim().to_string()).filter(|s| !s.is_empty());
+    let description = description
+        .map(|rest| rest.trim().to_string())
+        .filter(|s| !s.is_empty());
     Some((name.to_string(), description))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_markdown_docs;
+    use std::collections::HashSet;
+
+    use super::{make_unique_symbol_key, parse_markdown_docs};
 
     #[test]
     fn parse_markdown_docs_extracts_see_also() {
@@ -1387,5 +1517,17 @@ mod tests {
         assert_eq!(parsed.see_also[0].target, "crate::Foo");
         assert_eq!(parsed.see_also[1].label.as_deref(), None);
         assert_eq!(parsed.see_also[1].target, "Bar");
+    }
+
+    #[test]
+    fn make_unique_symbol_key_suffixes_collisions() {
+        let mut used = HashSet::new();
+        let base =
+            make_unique_symbol_key(&mut used, "docx_core", "docx_core::ControlError::from", 10);
+        let collision =
+            make_unique_symbol_key(&mut used, "docx_core", "docx_core::ControlError::from", 11);
+
+        assert_eq!(base, "rust|docx_core|docx_core::ControlError::from");
+        assert_eq!(collision, "rust|docx_core|docx_core::ControlError::from#11");
     }
 }

@@ -10,5 +10,13 @@
 .DS_Store
 Thumbs.db
 
+# Environment / credentials
+scripts/.env
+
 # Logs
 *.log
+
+# Ai folders used during testing.
+.claude
+.codex
+

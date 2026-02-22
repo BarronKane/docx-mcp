@@ -1,14 +1,10 @@
 use std::sync::Arc;
 
 use docx_core::services::{
-    BuildHandleFn,
-    RegistryError,
-    SolutionHandle,
-    SolutionRegistry,
-    SolutionRegistryConfig,
+    BuildHandleFn, RegistryError, SolutionHandle, SolutionRegistry, SolutionRegistryConfig,
 };
 use surrealdb::engine::any::{Any, connect};
-use surrealdb::opt::auth::Root;
+use surrealdb::opt::auth::Namespace;
 
 use crate::config::DocxConfig;
 
@@ -34,12 +30,13 @@ pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Any> {
                     .clone()
                     .ok_or_else(|| map_build_error("missing DOCX_DB_PASSWORD"))?;
                 let db = connect(uri).await.map_err(map_build_error)?;
-                db.signin(Root {
-                    username: &username,
-                    password: &password,
+                db.signin(Namespace {
+                    namespace: config.db_namespace.clone(),
+                    username,
+                    password,
                 })
-                    .await
-                    .map_err(map_build_error)?;
+                .await
+                .map_err(map_build_error)?;
                 db
             };
 
@@ -54,7 +51,8 @@ pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Any> {
     });
 
     let mut registry_config = SolutionRegistryConfig::new(build)
-        .with_sweep_interval(config.sweep_interval);
+        .with_sweep_interval(config.sweep_interval)
+        .with_health_check_after(config.health_check_after);
     if let Some(ttl) = config.registry_ttl {
         registry_config = registry_config.with_ttl(ttl);
     }

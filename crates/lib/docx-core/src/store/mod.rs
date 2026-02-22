@@ -4,4 +4,4 @@
 
 pub mod surreal;
 
-pub use surreal::{StoreError, StoreResult, SurrealDocStore};
+pub use surreal::{AdjacencyRaw, StoreError, StoreResult, SurrealDocStore};

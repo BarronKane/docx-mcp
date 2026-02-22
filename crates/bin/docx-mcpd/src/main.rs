@@ -28,14 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (ingest_ipv4, ingest_ipv6) = dual_stack_addrs(config.ingest_addr);
 
     if config.mcp_serve {
-        println!(
-            "docx-mcp http listening on IPv4 {mcp_ipv4} and IPv6 {mcp_ipv6}"
-        );
+        println!("docx-mcp http listening on IPv4 {mcp_ipv4} and IPv6 {mcp_ipv6}");
     }
     if config.ingest_serve {
-        println!(
-            "docx-ingest listening on IPv4 {ingest_ipv4} and IPv6 {ingest_ipv6}"
-        );
+        println!("docx-ingest listening on IPv4 {ingest_ipv4} and IPv6 {ingest_ipv6}");
     }
     let registry = build_registry(&config);
     let _sweeper = registry.clone().spawn_sweeper();

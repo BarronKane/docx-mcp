@@ -22,6 +22,12 @@ pub const SOURCE_KIND_CSHARP_XML: &str = "csharp_xml";
 pub const SOURCE_KIND_RUSTDOC_JSON: &str = "rustdoc_json";
 pub const SOURCE_KIND_DOXYGEN_XML: &str = "doxygen_xml";
 
+/// Initial schema migration applied by the runtime.
+///
+/// Schema migrations live in `schema/*.surql`, with `M0001_INIT.surql` defining
+/// the full initial model.
+pub const SCHEMA_BOOTSTRAP_SURQL: &str = include_str!("../schema/M0001_INIT.surql");
+
 /// Formats a `SurrealDB` record id string for the given table and id.
 #[must_use]
 pub fn make_record_id(table: &str, id: &str) -> String {

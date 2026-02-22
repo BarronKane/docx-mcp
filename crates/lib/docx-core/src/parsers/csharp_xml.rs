@@ -1,14 +1,7 @@
 use std::{error::Error, fmt, path::Path};
 
 use docx_store::models::{
-    DocBlock,
-    DocExample,
-    DocException,
-    DocInherit,
-    DocParam,
-    DocTypeParam,
-    SeeAlso,
-    SourceId,
+    DocBlock, DocExample, DocException, DocInherit, DocParam, DocTypeParam, SeeAlso, SourceId,
     Symbol,
 };
 use docx_store::schema::{SOURCE_KIND_CSHARP_XML, make_csharp_symbol_key};
@@ -97,7 +90,10 @@ impl CsharpXmlParser {
     /// # Errors
     /// Returns `CsharpParseError` if the XML is invalid or cannot be parsed.
     #[allow(clippy::too_many_lines)]
-    pub fn parse(xml: &str, options: &CsharpParseOptions) -> Result<CsharpParseOutput, CsharpParseError> {
+    pub fn parse(
+        xml: &str,
+        options: &CsharpParseOptions,
+    ) -> Result<CsharpParseOutput, CsharpParseError> {
         let doc = Document::parse(xml)?;
         let assembly_name = extract_assembly_name(&doc);
         let mut symbols = Vec::new();
@@ -181,38 +177,54 @@ impl CsharpXmlParser {
                     "value" => doc_block.value = optional_text(child),
                     "param" => {
                         if let Some(name) = child.attribute("name") {
-                        let description = render_doc_text(child);
-                        doc_block.params.push(DocParam {
-                            name: name.to_string(),
-                            description: if description.is_empty() { None } else { Some(description) },
-                            type_ref: None,
-                        });
+                            let description = render_doc_text(child);
+                            doc_block.params.push(DocParam {
+                                name: name.to_string(),
+                                description: if description.is_empty() {
+                                    None
+                                } else {
+                                    Some(description)
+                                },
+                                type_ref: None,
+                            });
                         }
                     }
                     "typeparam" => {
                         if let Some(name) = child.attribute("name") {
-                        let description = render_doc_text(child);
-                        doc_block.type_params.push(DocTypeParam {
-                            name: name.to_string(),
-                            description: if description.is_empty() { None } else { Some(description) },
-                        });
+                            let description = render_doc_text(child);
+                            doc_block.type_params.push(DocTypeParam {
+                                name: name.to_string(),
+                                description: if description.is_empty() {
+                                    None
+                                } else {
+                                    Some(description)
+                                },
+                            });
                         }
                     }
                     "exception" => {
                         let description = render_doc_text(child);
-                        let type_ref = child
-                            .attribute("cref")
-                            .map(|cref| docx_store::models::TypeRef {
-                                display: Some(cref.to_string()),
-                                canonical: Some(cref.to_string()),
-                                language: Some(options.language.clone()),
-                                symbol_key: Some(make_csharp_symbol_key(&options.project_id, cref)),
-                                generics: Vec::new(),
-                                modifiers: Vec::new(),
-                            });
+                        let type_ref =
+                            child
+                                .attribute("cref")
+                                .map(|cref| docx_store::models::TypeRef {
+                                    display: Some(cref.to_string()),
+                                    canonical: Some(cref.to_string()),
+                                    language: Some(options.language.clone()),
+                                    symbol_key: Some(make_csharp_symbol_key(
+                                        &options.project_id,
+                                        cref,
+                                    )),
+                                    generics: Vec::new(),
+                                    modifiers: Vec::new(),
+                                });
                         doc_block.exceptions.push(DocException {
                             type_ref,
-                            description: if description.is_empty() { None } else { Some(description) },
+                            description: if description.is_empty() {
+                                None
+                            } else {
+                                Some(description)
+                            },
                         });
                     }
                     "example" => {
@@ -352,7 +364,9 @@ fn extract_simple_name(value: &str) -> Option<&str> {
 }
 
 fn extract_assembly_name(doc: &Document<'_>) -> Option<String> {
-    let assembly_node = doc.descendants().find(|node| node.has_tag_name("assembly"))?;
+    let assembly_node = doc
+        .descendants()
+        .find(|node| node.has_tag_name("assembly"))?;
     let name_node = assembly_node
         .children()
         .find(|node| node.has_tag_name("name"))?;
@@ -366,11 +380,7 @@ fn render_doc_text(node: Node<'_, '_>) -> String {
 
 fn optional_text(node: Node<'_, '_>) -> Option<String> {
     let text = render_doc_text(node);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn render_children(node: Node<'_, '_>) -> String {

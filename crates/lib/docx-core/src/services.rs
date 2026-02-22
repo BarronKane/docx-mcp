@@ -10,7 +10,7 @@ use std::sync::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use surrealdb::{Connection, Surreal};
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::RwLock;
 
 use crate::control::DocxControlPlane;
 use crate::store::SurrealDocStore;
@@ -19,8 +19,7 @@ use crate::store::SurrealDocStore;
 pub type BuildHandleFuture<C> =
     Pin<Box<dyn Future<Output = Result<Arc<SolutionHandle<C>>, RegistryError>> + Send + 'static>>;
 /// Builder function that creates a solution handle for a solution name.
-pub type BuildHandleFn<C> =
-    Arc<dyn Fn(String) -> BuildHandleFuture<C> + Send + Sync + 'static>;
+pub type BuildHandleFn<C> = Arc<dyn Fn(String) -> BuildHandleFuture<C> + Send + Sync + 'static>;
 
 /// Configuration for the solution registry cache and builder.
 #[derive(Clone)]
@@ -33,6 +32,8 @@ pub struct SolutionRegistryConfig<C: Connection> {
     pub max_entries: Option<usize>,
     /// Builder used to create solution handles.
     pub build_handle: BuildHandleFn<C>,
+    /// Idle threshold before running a health check on next access.
+    pub health_check_after: Duration,
 }
 
 impl<C: Connection> SolutionRegistryConfig<C> {
@@ -43,6 +44,7 @@ impl<C: Connection> SolutionRegistryConfig<C> {
             sweep_interval: Duration::from_secs(60),
             max_entries: None,
             build_handle,
+            health_check_after: Duration::from_secs(60),
         }
     }
 
@@ -61,6 +63,12 @@ impl<C: Connection> SolutionRegistryConfig<C> {
     #[must_use]
     pub const fn with_max_entries(mut self, max_entries: usize) -> Self {
         self.max_entries = Some(max_entries);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_health_check_after(mut self, health_check_after: Duration) -> Self {
+        self.health_check_after = health_check_after;
         self
     }
 }
@@ -134,6 +142,14 @@ impl<C: Connection> SolutionHandle<C> {
     pub fn control(&self) -> DocxControlPlane<C> {
         self.control.clone()
     }
+
+    /// Runs a lightweight health check against the database connection.
+    pub async fn ping(&self) -> bool {
+        self.db
+            .query("SELECT 1")
+            .await
+            .is_ok_and(|r| r.check().is_ok())
+    }
 }
 
 /// Registry for dynamically created solution handles.
@@ -150,14 +166,14 @@ struct SolutionRegistryInner<C: Connection> {
 
 /// Cache entry that tracks a solution handle and last access time.
 struct SolutionEntry<C: Connection> {
-    handle: OnceCell<Arc<SolutionHandle<C>>>,
+    handle: RwLock<Option<Arc<SolutionHandle<C>>>>,
     last_used_ms: AtomicU64,
 }
 
 impl<C: Connection> SolutionEntry<C> {
     fn new() -> Self {
         Self {
-            handle: OnceCell::new(),
+            handle: RwLock::new(None),
             last_used_ms: AtomicU64::new(now_ms()),
         }
     }
@@ -184,6 +200,9 @@ impl<C: Connection> SolutionRegistry<C> {
     }
 
     /// Gets the solution handle or builds it once if missing.
+    ///
+    /// If the handle has been idle longer than `health_check_after`, a ping is
+    /// issued. On failure the stale handle is evicted and rebuilt.
     ///
     /// # Errors
     /// Returns `RegistryError` if capacity is exceeded or the build fails.
@@ -214,20 +233,48 @@ impl<C: Connection> SolutionRegistry<C> {
             }
         };
 
-        entry.touch();
+        // Try to get existing handle
+        {
+            let guard = entry.handle.read().await;
+            if let Some(handle) = guard.as_ref() {
+                // Health check if idle long enough
+                let idle = entry.idle_for(now_ms());
+                if idle <= self.inner.config.health_check_after || handle.ping().await {
+                    entry.touch();
+                    return Ok(handle.clone());
+                }
+                // Ping failed — fall through to rebuild
+                tracing::debug!("health check failed for solution '{solution}', rebuilding");
+            }
+        }
 
+        // Build or rebuild under write lock
+        let mut guard = entry.handle.write().await;
+        // Double-check: another task may have rebuilt while we waited
+        if let Some(handle) = guard.as_ref()
+            && handle.ping().await
+        {
+            entry.touch();
+            return Ok(handle.clone());
+        }
         let build_handle = self.inner.config.build_handle.clone();
-        let handle = entry
-            .handle
-            .get_or_try_init(|| (build_handle)(solution.to_string()))
-            .await?;
-        Ok(handle.clone())
+        let handle = (build_handle)(solution.to_string()).await?;
+        *guard = Some(handle.clone());
+        drop(guard);
+        entry.touch();
+        Ok(handle)
     }
 
     /// Lists known solutions from the cache.
     pub async fn list_solutions(&self) -> Vec<String> {
         let map = self.inner.entries.read().await;
         map.keys().cloned().collect()
+    }
+
+    /// Removes a cached solution handle entry.
+    pub async fn remove_solution(&self, solution: &str) -> bool {
+        let mut map = self.inner.entries.write().await;
+        map.remove(solution).is_some()
     }
 
     /// Evicts idle entries that exceed the configured TTL.
@@ -238,7 +285,13 @@ impl<C: Connection> SolutionRegistry<C> {
         let now = now_ms();
         let mut map = self.inner.entries.write().await;
         let before = map.len();
-        map.retain(|_, entry| entry.idle_for(now) <= ttl);
+        map.retain(|key, entry| {
+            let keep = entry.idle_for(now) <= ttl;
+            if !keep {
+                tracing::debug!("evicted idle solution: {key}");
+            }
+            keep
+        });
         before.saturating_sub(map.len())
     }
 
@@ -276,10 +329,7 @@ mod tests {
 
     use surrealdb::engine::local::{Db, Mem};
 
-    fn build_test_registry(
-        calls: Arc<AtomicUsize>,
-        ttl: Option<Duration>,
-    ) -> SolutionRegistry<Db> {
+    fn build_test_registry(calls: Arc<AtomicUsize>, ttl: Option<Duration>) -> SolutionRegistry<Db> {
         let build: BuildHandleFn<Db> = Arc::new(move |solution: String| {
             let calls = calls.clone();
             Box::pin(async move {
@@ -297,7 +347,9 @@ mod tests {
 
         let mut config = SolutionRegistryConfig::new(build);
         if let Some(ttl) = ttl {
-            config = config.with_ttl(ttl).with_sweep_interval(Duration::from_millis(1));
+            config = config
+                .with_ttl(ttl)
+                .with_sweep_interval(Duration::from_millis(1));
         }
         SolutionRegistry::new(config)
     }
@@ -324,5 +376,18 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         let evicted = registry.evict_idle().await;
         assert_eq!(evicted, 1);
+    }
+
+    #[tokio::test]
+    async fn registry_remove_solution_drops_cache_entry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = build_test_registry(calls.clone(), None);
+
+        let _ = registry.get_or_init("alpha").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(registry.remove_solution("alpha").await);
+        let _ = registry.get_or_init("alpha").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

@@ -4,23 +4,18 @@
 //! MCP-facing API surface for ingestion and query.
 
 mod helpers;
-mod tools;
 pub mod server;
+mod tools;
 
 use std::sync::Arc;
 
 use docx_core::control::DocxControlPlane;
 use docx_core::services::{RegistryError, SolutionRegistry};
-use serde::Serialize;
-use rmcp::{
-    ErrorData,
-    ServerHandler,
-    handler::server::tool::ToolRouter,
-    tool,
-    tool_handler,
-    tool_router,
-};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::{
+    ErrorData, ServerHandler, handler::server::tool::ToolRouter, tool, tool_handler, tool_router,
+};
+use serde::Serialize;
 use surrealdb::Connection;
 
 const SERVER_NAME: &str = "docx-mcp";
@@ -44,6 +39,7 @@ Workflow:
    Include optional metadata: `ingest_id`, `source_path`, `source_modified_at`, `tool_version`, `source_hash`.
 3. Query metadata:
    - `list_projects`, `search_projects`, `list_ingests`, `get_ingest`, `list_doc_sources`, `get_doc_source`.
+   - `delete_solution` removes a full solution database (destructive; requires `confirm=true`).
 4. Query symbols and docs:
    - `list_symbol_types`, `search_symbols`, `get_symbol`, `list_doc_blocks`, `search_doc_blocks`.
    - `get_symbol_adjacency` returns symbols, doc blocks, doc sources, and relation edges.
@@ -51,7 +47,9 @@ Workflow:
 Notes:
 - `symbol_key` format is `{language}|{project_id}|{qualified_name}` for rustdoc data.
 - Symbol metadata includes source file paths, line/column, signatures, params, and return types when available.
-- Relation edges include `member_of`, `contains`, `returns`, `param_type`, `see_also`, `inherits`, and `references`.
+- Relation edges include `member_of`, `contains`, `returns`, `param_type`, `see_also`, `inherits`, `references`, and `observed_in`.
+- Call `skills` for a comprehensive agent guide (skills.md) covering workflows, decision trees, common patterns, and troubleshooting.
+  Save the output as `skills.md` in your project root for offline reference. If the file already exists locally, read it instead of calling the tool again.
 - Use `help`, `ingestion_help`, `dotnet_help`, and `rust_help` for detailed guidance.
 - For large payloads, use the HTTP ingest server (POST `http://<host>:4010/ingest`) with required
   `solution`, `project_id`, `kind` (`csharp_xml` or `rustdoc_json`), and either `contents` or `contents_path`.
@@ -146,9 +144,7 @@ impl<C: Connection> ServerHandler for DocxMcp<C> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(SERVER_INSTRUCTIONS.to_string()),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
     }

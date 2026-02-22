@@ -6,15 +6,7 @@
 pub mod csharp_xml;
 pub mod rustdoc_json;
 
-pub use csharp_xml::{
-    CsharpParseError,
-    CsharpParseOptions,
-    CsharpParseOutput,
-    CsharpXmlParser,
-};
+pub use csharp_xml::{CsharpParseError, CsharpParseOptions, CsharpParseOutput, CsharpXmlParser};
 pub use rustdoc_json::{
-    RustdocJsonParser,
-    RustdocParseError,
-    RustdocParseOptions,
-    RustdocParseOutput,
+    RustdocJsonParser, RustdocParseError, RustdocParseOptions, RustdocParseOutput,
 };

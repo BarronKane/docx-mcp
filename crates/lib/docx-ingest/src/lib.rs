@@ -6,16 +6,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use docx_core::control::{
-    ControlError,
-    CsharpIngestReport,
-    CsharpIngestRequest,
-    RustdocIngestReport,
+    ControlError, CsharpIngestReport, CsharpIngestRequest, RustdocIngestReport,
     RustdocIngestRequest,
 };
 use docx_core::services::{RegistryError, SolutionRegistry};
@@ -158,9 +155,9 @@ impl From<RegistryError> for ApiError {
             RegistryError::UnknownSolution(solution) => {
                 Self::not_found(format!("unknown solution: {solution}"))
             }
-            RegistryError::CapacityReached { max } => Self::internal(format!(
-                "solution registry capacity reached (max {max})"
-            )),
+            RegistryError::CapacityReached { max } => {
+                Self::internal(format!("solution registry capacity reached (max {max})"))
+            }
             RegistryError::BuildFailed(message) => {
                 Self::internal(format!("failed to build solution handle: {message}"))
             }
@@ -181,7 +178,9 @@ impl From<ControlError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let payload = Json(ErrorResponse { error: self.message });
+        let payload = Json(ErrorResponse {
+            error: self.message,
+        });
         (self.status, payload).into_response()
     }
 }
@@ -220,7 +219,7 @@ enum IngestKind {
 }
 
 impl IngestKind {
-    const fn as_str(&self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::CsharpXml => "csharp_xml",
             Self::RustdocJson => "rustdoc_json",
@@ -266,31 +265,32 @@ async fn health() -> &'static str {
 }
 
 fn require_non_empty(field: &str, value: Option<String>) -> Result<String, ApiError> {
-    match value {
-        Some(value) => {
+    value.map_or_else(
+        || Err(ApiError::bad_request(format!("{field} is required"))),
+        |value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 Err(ApiError::bad_request(format!("{field} is required")))
             } else {
                 Ok(trimmed.to_string())
             }
-        }
-        None => Err(ApiError::bad_request(format!("{field} is required"))),
-    }
+        },
+    )
 }
 
 fn require_kind(kind: Option<IngestKind>) -> Result<IngestKind, ApiError> {
     kind.ok_or_else(|| ApiError::bad_request("kind is required (csharp_xml or rustdoc_json)"))
 }
 
-fn has_payload(value: &Option<String>) -> bool {
-    value
-        .as_ref()
-        .map(|payload| !payload.trim().is_empty())
-        .unwrap_or(false)
+fn has_payload(value: Option<&String>) -> bool {
+    value.is_some_and(|payload| !payload.trim().is_empty())
 }
 
-fn require_contents(contents: &Option<String>, contents_path: &Option<String>, kind: IngestKind) -> Result<(), ApiError> {
+fn require_contents(
+    contents: Option<&String>,
+    contents_path: Option<&String>,
+    kind: IngestKind,
+) -> Result<(), ApiError> {
     if has_payload(contents) || has_payload(contents_path) {
         Ok(())
     } else {
@@ -321,12 +321,9 @@ where
         tool_version: payload.tool_version,
         source_hash: payload.source_hash,
     };
-    let ingest = tokio::time::timeout(
-        state.request_timeout,
-        control.ingest_csharp_xml(request),
-    )
-    .await
-    .map_err(|_| ApiError::timeout())??;
+    let ingest = tokio::time::timeout(state.request_timeout, control.ingest_csharp_xml(request))
+        .await
+        .map_err(|_| ApiError::timeout())??;
 
     Ok(Json(ingest))
 }
@@ -351,12 +348,9 @@ where
         tool_version: payload.tool_version,
         source_hash: payload.source_hash,
     };
-    let ingest = tokio::time::timeout(
-        state.request_timeout,
-        control.ingest_rustdoc_json(request),
-    )
-    .await
-    .map_err(|_| ApiError::timeout())??;
+    let ingest = tokio::time::timeout(state.request_timeout, control.ingest_rustdoc_json(request))
+        .await
+        .map_err(|_| ApiError::timeout())??;
 
     Ok(Json(ingest))
 }
@@ -371,7 +365,11 @@ where
     let solution = require_non_empty("solution", payload.solution)?;
     let project_id = require_non_empty("project_id", payload.project_id)?;
     let kind = require_kind(payload.kind)?;
-    require_contents(&payload.contents, &payload.contents_path, kind)?;
+    require_contents(
+        payload.contents.as_ref(),
+        payload.contents_path.as_ref(),
+        kind,
+    )?;
     let control = control_for_solution(&state, &solution).await?;
     let ingest = match kind {
         IngestKind::CsharpXml => {
@@ -415,7 +413,6 @@ where
     Ok(Json(ingest))
 }
 
-
 async fn control_for_solution<C>(
     state: &AppState<C>,
     solution: &str,
@@ -427,7 +424,11 @@ where
     if trimmed.is_empty() {
         return Err(ApiError::bad_request("solution is required"));
     }
-    let handle = state.registry.get_or_init(trimmed).await.map_err(ApiError::from)?;
+    let handle = state
+        .registry
+        .get_or_init(trimmed)
+        .await
+        .map_err(ApiError::from)?;
     Ok(handle.control())
 }
 
@@ -438,8 +439,8 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use docx_core::services::{BuildHandleFn, SolutionHandle, SolutionRegistryConfig};
     use serde_json::Value;
-    use surrealdb::engine::local::{Db, Mem};
     use surrealdb::Surreal;
+    use surrealdb::engine::local::{Db, Mem};
     use tower::ServiceExt;
 
     fn fixture_path() -> std::path::PathBuf {
@@ -514,15 +515,18 @@ mod tests {
             let body_text = String::from_utf8_lossy(&bytes);
             panic!("unexpected status {status}: {body_text}");
         }
-        let payload: Value = serde_json::from_slice(&bytes)
-            .expect("response should be valid JSON");
-        assert_eq!(payload.get("kind").and_then(Value::as_str), Some("rustdoc_json"));
-        assert!(payload
-            .get("report")
-            .and_then(|value| value.get("symbol_count"))
-            .is_some());
+        let payload: Value = serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            payload.get("kind").and_then(Value::as_str),
+            Some("rustdoc_json")
+        );
+        assert!(
+            payload
+                .get("report")
+                .and_then(|value| value.get("symbol_count"))
+                .is_some()
+        );
     }
-
 
     #[tokio::test]
     async fn ingest_payload_accepts_contents_path() {
@@ -566,9 +570,11 @@ mod tests {
             let body_text = String::from_utf8_lossy(&bytes);
             panic!("unexpected status {status}: {body_text}");
         }
-        let payload: Value = serde_json::from_slice(&bytes)
-            .expect("response should be valid JSON");
-        assert_eq!(payload.get("kind").and_then(Value::as_str), Some("rustdoc_json"));
+        let payload: Value = serde_json::from_slice(&bytes).expect("response should be valid JSON");
+        assert_eq!(
+            payload.get("kind").and_then(Value::as_str),
+            Some("rustdoc_json")
+        );
         let _ = std::fs::remove_file(&temp_path);
     }
 
@@ -604,8 +610,7 @@ mod tests {
             .await
             .expect("failed to read response body");
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let payload: Value = serde_json::from_slice(&bytes)
-            .expect("response should be valid JSON");
+        let payload: Value = serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             payload.get("error").and_then(Value::as_str),
             Some("solution is required")
@@ -644,8 +649,7 @@ mod tests {
             .await
             .expect("failed to read response body");
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let payload: Value = serde_json::from_slice(&bytes)
-            .expect("response should be valid JSON");
+        let payload: Value = serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             payload.get("error").and_then(Value::as_str),
             Some("contents or contents_path is required for rustdoc_json")
@@ -682,8 +686,7 @@ mod tests {
             .await
             .expect("failed to read response body");
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let payload: Value = serde_json::from_slice(&bytes)
-            .expect("response should be valid JSON");
+        let payload: Value = serde_json::from_slice(&bytes).expect("response should be valid JSON");
         assert_eq!(
             payload.get("error").and_then(Value::as_str),
             Some("project_id is required")

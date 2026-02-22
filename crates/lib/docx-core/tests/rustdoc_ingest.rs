@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use docx_core::control::{DocxControlPlane, RustdocIngestRequest};
 use docx_core::parsers::{RustdocJsonParser, RustdocParseOptions, RustdocParseOutput};
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,11 +14,10 @@ fn fixture_path() -> PathBuf {
 
 fn load_fixture() -> String {
     let path = fixture_path();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|err| {
-            let path_display = path.display();
-            panic!("failed to read rustdoc fixture at {path_display}: {err}")
-        })
+    std::fs::read_to_string(&path).unwrap_or_else(|err| {
+        let path_display = path.display();
+        panic!("failed to read rustdoc fixture at {path_display}: {err}")
+    })
 }
 
 fn parse_fixture(project_id: &str, ingest_id: &str) -> RustdocParseOutput {
@@ -96,7 +95,10 @@ async fn ingest_rustdoc_fixture_roundtrip() {
         .get_symbol_adjacency(project_id, &named_symbol.symbol_key, 50)
         .await
         .expect("symbol adjacency lookup should succeed");
-    assert!(adjacency.symbol.is_some(), "adjacency should include symbol");
+    assert!(
+        adjacency.symbol.is_some(),
+        "adjacency should include symbol"
+    );
     assert!(
         !adjacency.doc_blocks.is_empty(),
         "adjacency should include doc blocks"

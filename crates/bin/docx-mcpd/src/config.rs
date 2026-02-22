@@ -8,6 +8,7 @@ const DEFAULT_DB_NAMESPACE: &str = "docx";
 const DEFAULT_MCP_HTTP_ADDR: &str = "127.0.0.1:4020";
 const DEFAULT_INGEST_ADDR: &str = "127.0.0.1:4010";
 const DEFAULT_REGISTRY_TTL_SECS: u64 = 300;
+const DEFAULT_REGISTRY_HEALTH_CHECK_SECS: u64 = 60;
 const DEFAULT_INGEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_INGEST_MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
 
@@ -27,6 +28,13 @@ struct CliArgs {
 
     #[arg(long, env = "DOCX_REGISTRY_SWEEP_SECS")]
     registry_sweep_secs: Option<u64>,
+
+    #[arg(
+        long,
+        env = "DOCX_REGISTRY_HEALTH_CHECK_SECS",
+        default_value_t = DEFAULT_REGISTRY_HEALTH_CHECK_SECS
+    )]
+    registry_health_check_secs: u64,
 
     #[arg(long, env = "DOCX_REGISTRY_MAX")]
     max_entries: Option<usize>,
@@ -109,6 +117,7 @@ pub struct DocxConfig {
     pub registry_ttl: Option<Duration>,
     pub sweep_interval: Duration,
     pub max_entries: Option<usize>,
+    pub health_check_after: Duration,
     pub enable_stdio: bool,
     pub mcp_serve: bool,
     pub ingest_serve: bool,
@@ -162,18 +171,12 @@ impl TryFrom<CliArgs> for DocxConfig {
         } else {
             Some(Duration::from_secs(args.registry_ttl_secs))
         };
-        let sweep_secs = args
-            .registry_sweep_secs
-            .unwrap_or(args.registry_ttl_secs);
+        let sweep_secs = args.registry_sweep_secs.unwrap_or(args.registry_ttl_secs);
         let sweep_interval = Duration::from_secs(sweep_secs);
 
         let db_uri = args.db_uri.filter(|value| !value.trim().is_empty());
-        let db_username = args
-            .db_username
-            .filter(|value| !value.trim().is_empty());
-        let db_password = args
-            .db_password
-            .filter(|value| !value.trim().is_empty());
+        let db_username = args.db_username.filter(|value| !value.trim().is_empty());
+        let db_password = args.db_password.filter(|value| !value.trim().is_empty());
 
         let db_in_memory = args.db_in_memory || db_uri.is_none();
 
@@ -201,6 +204,7 @@ impl TryFrom<CliArgs> for DocxConfig {
             registry_ttl,
             sweep_interval,
             max_entries: args.max_entries,
+            health_check_after: Duration::from_secs(args.registry_health_check_secs),
             enable_stdio: args.enable_stdio,
             mcp_serve: args.mcp_serve,
             ingest_serve: args.ingest_serve,
@@ -226,6 +230,7 @@ mod tests {
             db_namespace: DEFAULT_DB_NAMESPACE.to_string(),
             registry_ttl_secs: DEFAULT_REGISTRY_TTL_SECS,
             registry_sweep_secs: None,
+            registry_health_check_secs: DEFAULT_REGISTRY_HEALTH_CHECK_SECS,
             max_entries: None,
             enable_stdio: false,
             mcp_serve: true,

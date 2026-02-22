@@ -1,33 +1,22 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 
 use docx_store::models::{DocBlock, DocSource, Ingest, RelationRecord, Symbol};
 use docx_store::schema::{
-    REL_CONTAINS,
-    REL_DOCUMENTS,
-    REL_INHERITS,
-    REL_MEMBER_OF,
-    REL_PARAM_TYPE,
-    REL_REFERENCES,
-    REL_RETURNS,
-    REL_SEE_ALSO,
-    SOURCE_KIND_CSHARP_XML,
-    SOURCE_KIND_RUSTDOC_JSON,
-    TABLE_DOC_BLOCK,
-    TABLE_SYMBOL,
-    make_csharp_symbol_key,
-    make_record_id,
-    make_symbol_key,
+    REL_CONTAINS, REL_DOCUMENTS, REL_IMPLEMENTS, REL_INHERITS, REL_MEMBER_OF, REL_OBSERVED_IN,
+    REL_PARAM_TYPE, REL_REFERENCES, REL_RETURNS, REL_SEE_ALSO, SOURCE_KIND_CSHARP_XML,
+    SOURCE_KIND_RUSTDOC_JSON, TABLE_DOC_BLOCK, TABLE_DOC_SOURCE, TABLE_SYMBOL,
+    make_csharp_symbol_key, make_record_id, make_symbol_key,
 };
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 use surrealdb::Connection;
+use tokio::fs;
 
 use crate::parsers::{CsharpParseOptions, CsharpXmlParser, RustdocJsonParser, RustdocParseOptions};
 use crate::store::StoreError;
 
-use super::{ControlError, DocxControlPlane};
 use super::metadata::ProjectUpsertRequest;
+use super::{ControlError, DocxControlPlane};
 
 /// Input payload for ingesting C# XML documentation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,13 +127,26 @@ impl<C: Connection> DocxControlPlane<C> {
                 tool_version,
                 source_hash,
                 source_modified_at,
+                extra: None,
             })
             .await?;
         let documents_edge_count = self
-            .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
+            .persist_relations(
+                &stored_symbols,
+                &stored_blocks,
+                &project_id,
+                ingest_id.as_deref(),
+                doc_source_id.as_deref(),
+                &HashMap::new(),
+            )
             .await?;
         let _ = self
-            .create_ingest_record(&project_id, ingest_id.as_deref(), ingest_source_modified_at)
+            .create_ingest_record(
+                &project_id,
+                ingest_id.as_deref(),
+                ingest_source_modified_at,
+                None,
+            )
             .await?;
 
         Ok(CsharpIngestReport {
@@ -208,6 +210,10 @@ impl<C: Connection> DocxControlPlane<C> {
 
         let stored_symbols = self.store_symbols(parsed.symbols).await?;
         let stored_blocks = self.store.create_doc_blocks(parsed.doc_blocks).await?;
+        let doc_source_extra = serde_json::json!({
+            "format_version": parsed.format_version,
+            "includes_private": parsed.includes_private,
+        });
         let doc_source_id = self
             .create_doc_source_if_needed(DocSourceInput {
                 project_id: project_id.clone(),
@@ -218,13 +224,26 @@ impl<C: Connection> DocxControlPlane<C> {
                 tool_version,
                 source_hash,
                 source_modified_at,
+                extra: Some(doc_source_extra),
             })
             .await?;
         let documents_edge_count = self
-            .persist_relations(&stored_symbols, &stored_blocks, &project_id, ingest_id.as_deref())
+            .persist_relations(
+                &stored_symbols,
+                &stored_blocks,
+                &project_id,
+                ingest_id.as_deref(),
+                doc_source_id.as_deref(),
+                &parsed.trait_impls,
+            )
             .await?;
         let _ = self
-            .create_ingest_record(&project_id, ingest_id.as_deref(), ingest_source_modified_at)
+            .create_ingest_record(
+                &project_id,
+                ingest_id.as_deref(),
+                ingest_source_modified_at,
+                parsed.crate_version.clone(),
+            )
             .await?;
 
         Ok(RustdocIngestReport {
@@ -237,8 +256,8 @@ impl<C: Connection> DocxControlPlane<C> {
     }
 
     async fn store_symbols(&self, symbols: Vec<Symbol>) -> Result<Vec<Symbol>, ControlError> {
-        let mut stored = Vec::with_capacity(symbols.len());
-        for symbol in symbols {
+        let mut stored = Vec::new();
+        for symbol in dedupe_symbols(symbols) {
             stored.push(self.store.upsert_symbol(symbol).await?);
         }
         Ok(stored)
@@ -251,7 +270,8 @@ impl<C: Connection> DocxControlPlane<C> {
         let has_source = input.source_path.is_some()
             || input.tool_version.is_some()
             || input.source_hash.is_some()
-            || input.source_modified_at.is_some();
+            || input.source_modified_at.is_some()
+            || input.extra.is_some();
         if !has_source {
             return Ok(None);
         }
@@ -266,7 +286,7 @@ impl<C: Connection> DocxControlPlane<C> {
             tool_version: input.tool_version,
             hash: input.source_hash,
             source_modified_at: input.source_modified_at,
-            extra: None,
+            extra: input.extra,
         };
         let created = self.store.create_doc_source(source).await?;
         Ok(created.id)
@@ -277,6 +297,7 @@ impl<C: Connection> DocxControlPlane<C> {
         project_id: &str,
         ingest_id: Option<&str>,
         source_modified_at: Option<String>,
+        project_version: Option<String>,
     ) -> Result<Option<String>, ControlError> {
         let ingest = Ingest {
             id: ingest_id.map(str::to_string),
@@ -284,9 +305,9 @@ impl<C: Connection> DocxControlPlane<C> {
             git_commit: None,
             git_branch: None,
             git_tag: None,
-            project_version: None,
+            project_version,
             source_modified_at,
-            ingested_at: None,
+            ingested_at: Some(chrono::Utc::now().to_rfc3339()),
             extra: None,
         };
         let created = self.store.create_ingest(ingest).await?;
@@ -299,22 +320,46 @@ impl<C: Connection> DocxControlPlane<C> {
         stored_blocks: &[DocBlock],
         project_id: &str,
         ingest_id: Option<&str>,
+        doc_source_id: Option<&str>,
+        trait_impls: &HashMap<String, Vec<String>>,
     ) -> Result<usize, ControlError> {
         let documents = build_documents_edges(stored_symbols, stored_blocks, project_id, ingest_id);
         let documents_edge_count = documents.len();
         if !documents.is_empty() {
-            let _ = self.store.create_relations(REL_DOCUMENTS, documents).await?;
+            let _ = self
+                .store
+                .create_relations(REL_DOCUMENTS, documents)
+                .await?;
         }
 
-        let relations = build_symbol_relations(stored_symbols, project_id, ingest_id);
+        let relations = build_symbol_relations(stored_symbols, project_id, ingest_id, trait_impls);
         if !relations.is_empty() {
-            let _ = self.store.create_relations(REL_MEMBER_OF, relations.member_of).await?;
-            let _ = self.store.create_relations(REL_CONTAINS, relations.contains).await?;
-            let _ = self.store.create_relations(REL_RETURNS, relations.returns).await?;
-            let _ = self.store.create_relations(REL_PARAM_TYPE, relations.param_types).await?;
+            let _ = self
+                .store
+                .create_relations(REL_MEMBER_OF, relations.member_of)
+                .await?;
+            let _ = self
+                .store
+                .create_relations(REL_CONTAINS, relations.contains)
+                .await?;
+            let _ = self
+                .store
+                .create_relations(REL_RETURNS, relations.returns)
+                .await?;
+            let _ = self
+                .store
+                .create_relations(REL_PARAM_TYPE, relations.param_types)
+                .await?;
+            if !relations.implements.is_empty() {
+                let _ = self
+                    .store
+                    .create_relations(REL_IMPLEMENTS, relations.implements)
+                    .await?;
+            }
         }
 
-        let doc_relations = build_doc_block_relations(stored_symbols, stored_blocks, project_id, ingest_id);
+        let doc_relations =
+            build_doc_block_relations(stored_symbols, stored_blocks, project_id, ingest_id);
         if !doc_relations.is_empty() {
             let _ = self
                 .store
@@ -328,6 +373,17 @@ impl<C: Connection> DocxControlPlane<C> {
                 .store
                 .create_relations(REL_REFERENCES, doc_relations.references)
                 .await?;
+        }
+
+        if let Some(doc_source_id) = doc_source_id {
+            let observed_in =
+                build_observed_in_edges(stored_symbols, project_id, ingest_id, doc_source_id);
+            if !observed_in.is_empty() {
+                let _ = self
+                    .store
+                    .create_relations(REL_OBSERVED_IN, observed_in)
+                    .await?;
+            }
         }
 
         Ok(documents_edge_count)
@@ -374,6 +430,17 @@ fn strip_bom(value: &str) -> String {
     value.strip_prefix('\u{feff}').unwrap_or(value).to_string()
 }
 
+fn dedupe_symbols(symbols: Vec<Symbol>) -> Vec<Symbol> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(symbols.len());
+    for symbol in symbols {
+        if seen.insert(symbol.symbol_key.clone()) {
+            deduped.push(symbol);
+        }
+    }
+    deduped
+}
+
 struct DocSourceInput {
     project_id: String,
     ingest_id: Option<String>,
@@ -383,6 +450,7 @@ struct DocSourceInput {
     tool_version: Option<String>,
     source_hash: Option<String>,
     source_modified_at: Option<String>,
+    extra: Option<serde_json::Value>,
 }
 
 /// Builds `documents` relation edges between doc blocks and symbols.
@@ -425,6 +493,30 @@ fn build_documents_edges(
     relations
 }
 
+/// Builds `observed_in` relation edges between symbols and the ingested doc source.
+fn build_observed_in_edges(
+    symbols: &[Symbol],
+    project_id: &str,
+    ingest_id: Option<&str>,
+    doc_source_id: &str,
+) -> Vec<RelationRecord> {
+    let doc_source_record = make_record_id(TABLE_DOC_SOURCE, doc_source_id);
+    symbols
+        .iter()
+        .filter_map(|symbol| {
+            symbol.id.as_ref().map(|symbol_id| RelationRecord {
+                id: None,
+                in_id: make_record_id(TABLE_SYMBOL, symbol_id),
+                out_id: doc_source_record.clone(),
+                project_id: project_id.to_string(),
+                ingest_id: ingest_id.map(str::to_string),
+                kind: Some("doc_source".to_string()),
+                extra: None,
+            })
+        })
+        .collect()
+}
+
 /// Bundles relation edges derived from symbol metadata.
 #[derive(Default)]
 struct SymbolRelations {
@@ -432,6 +524,7 @@ struct SymbolRelations {
     contains: Vec<RelationRecord>,
     returns: Vec<RelationRecord>,
     param_types: Vec<RelationRecord>,
+    implements: Vec<RelationRecord>,
 }
 
 impl SymbolRelations {
@@ -441,21 +534,25 @@ impl SymbolRelations {
             && self.contains.is_empty()
             && self.returns.is_empty()
             && self.param_types.is_empty()
+            && self.implements.is_empty()
     }
 }
 
-/// Builds relation edges for symbol membership, containment, and type references.
+/// Builds relation edges for symbol membership, containment, type references, and trait impls.
 fn build_symbol_relations(
     symbols: &[Symbol],
     project_id: &str,
     ingest_id: Option<&str>,
+    trait_impls: &HashMap<String, Vec<String>>,
 ) -> SymbolRelations {
     let mut relations = SymbolRelations::default();
     let mut symbol_by_qualified = HashMap::new();
     let mut symbol_by_key = HashMap::new();
 
     for symbol in symbols {
-        if let (Some(id), Some(qualified_name)) = (symbol.id.as_ref(), symbol.qualified_name.as_ref()) {
+        if let (Some(id), Some(qualified_name)) =
+            (symbol.id.as_ref(), symbol.qualified_name.as_ref())
+        {
             symbol_by_qualified.insert(qualified_name.as_str(), id.as_str());
         }
         if let Some(id) = symbol.id.as_ref() {
@@ -533,6 +630,26 @@ fn build_symbol_relations(
                 extra: None,
             });
         }
+
+        // Build implements edges from trait_impls map
+        if let Some(qualified_name) = symbol.qualified_name.as_ref()
+            && let Some(trait_paths) = trait_impls.get(qualified_name.as_str())
+        {
+            for trait_path in trait_paths {
+                let trait_key = make_symbol_key("rust", project_id, trait_path);
+                if let Some(trait_id) = symbol_by_key.get(trait_key.as_str()).copied() {
+                    relations.implements.push(RelationRecord {
+                        id: None,
+                        in_id: symbol_record.clone(),
+                        out_id: make_record_id(TABLE_SYMBOL, trait_id),
+                        project_id: project_id.to_string(),
+                        ingest_id: ingest_id.clone(),
+                        kind: Some("trait_impl".to_string()),
+                        extra: None,
+                    });
+                }
+            }
+        }
     }
 
     relations
@@ -580,12 +697,9 @@ fn build_doc_block_relations(
         let language = block.language.as_deref();
 
         for link in &block.see_also {
-            if let Some(target_id) = resolve_symbol_reference(
-                &link.target,
-                language,
-                project_id,
-                &symbol_by_key,
-            ) {
+            if let Some(target_id) =
+                resolve_symbol_reference(&link.target, language, project_id, &symbol_by_key)
+            {
                 relations.see_also.push(RelationRecord {
                     id: None,
                     in_id: symbol_record.clone(),
@@ -731,6 +845,24 @@ mod tests {
     }
 
     #[test]
+    fn build_observed_in_edges_links_symbols_to_doc_source() {
+        let symbols = vec![
+            build_symbol("docx", "foo", "csharp|docx|T:Foo"),
+            build_symbol("docx", "bar", "csharp|docx|T:Bar"),
+        ];
+
+        let edges = build_observed_in_edges(&symbols, "docx", Some("ing-1"), "source-1");
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].in_id, make_record_id(TABLE_SYMBOL, "foo"));
+        assert_eq!(
+            edges[0].out_id,
+            make_record_id(TABLE_DOC_SOURCE, "source-1")
+        );
+        assert_eq!(edges[0].ingest_id.as_deref(), Some("ing-1"));
+        assert_eq!(edges[0].kind.as_deref(), Some("doc_source"));
+    }
+
+    #[test]
     fn build_doc_block_relations_extracts_csharp_references() {
         let project_id = "docx";
         let foo_key = make_csharp_symbol_key(project_id, "T:Foo");
@@ -774,5 +906,21 @@ mod tests {
         assert_eq!(relations.see_also[0].kind.as_deref(), Some("cref"));
         assert_eq!(relations.inherits[0].kind.as_deref(), Some("inheritdoc"));
         assert_eq!(relations.references[0].kind.as_deref(), Some("exception"));
+    }
+
+    #[test]
+    fn dedupe_symbols_keeps_first_symbol_per_key() {
+        let mut first = build_symbol("docx", "first", "csharp|docx|T:Foo");
+        first.name = Some("first".to_string());
+        let mut duplicate = build_symbol("docx", "second", "csharp|docx|T:Foo");
+        duplicate.name = Some("second".to_string());
+        let other = build_symbol("docx", "third", "csharp|docx|T:Bar");
+
+        let deduped = dedupe_symbols(vec![first.clone(), duplicate, other.clone()]);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].symbol_key, first.symbol_key);
+        assert_eq!(deduped[0].name.as_deref(), Some("first"));
+        assert_eq!(deduped[1].symbol_key, other.symbol_key);
     }
 }

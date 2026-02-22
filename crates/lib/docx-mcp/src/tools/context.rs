@@ -1,9 +1,7 @@
 use rmcp::{
     ErrorData,
     model::{CallToolResult, Content},
-    schemars,
-    tool,
-    tool_router,
+    schemars, tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
@@ -20,6 +18,8 @@ impl Default for HelpCommands {
     fn default() -> Self {
         Self {
             commands: vec![
+                "skills - Comprehensive agent guide (skills.md). Call this tool to retrieve the full text; save the output as `skills.md` in your project root for offline reference."
+                    .to_string(),
                 "help - List MCP commands to get context with how this MCP server works."
                     .to_string(),
                 "version - Get the MCP server version."
@@ -37,6 +37,8 @@ impl Default for HelpCommands {
                 "list_ingests - List ingest metadata for a project."
                     .to_string(),
                 "get_ingest - Fetch a specific ingest record by id."
+                    .to_string(),
+                "delete_solution - Delete an entire solution database (destructive; requires confirm=true)."
                     .to_string(),
                 "list_doc_sources - List document source metadata for a project."
                     .to_string(),
@@ -65,15 +67,26 @@ impl Default for HelpCommands {
 
 #[tool_router(router = tool_router_context, vis = "pub")]
 impl<C: Connection> DocxMcp<C> {
+    #[tool(
+        description = "Returns the full skills.md agent guide: when and how to use each tool, common workflows, decision trees, and troubleshooting. Save the output as `skills.md` in your project root for offline reference; if the file already exists locally, read it instead of calling this tool again."
+    )]
+    async fn skills(&self) -> Result<CallToolResult, ErrorData> {
+        Ok(CallToolResult::success(vec![Content::text(include_str!(
+            "../../skills.md"
+        ))]))
+    }
+
     #[tool(description = "List the MCP commands to get context with how this MCP server works.")]
     async fn help(&self) -> Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::success(vec![Content::json(HelpCommands::default())?]))
+        Ok(CallToolResult::success(vec![Content::json(
+            HelpCommands::default(),
+        )?]))
     }
 
     #[tool(description = "Details how to send code documentation to the MCP server for ingestion")]
     async fn ingestion_help(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(
- r#"
+            r#"
 1. Use the MCP ingestion tools to send documentation payloads into the server.
 2. Required fields for all ingest tools:
     - solution: the solution/tenant name managed by the MCP server.
@@ -150,14 +163,16 @@ impl<C: Connection> DocxMcp<C> {
         Invoke-WebRequest -Uri http://127.0.0.1:4010/ingest -Method Post -ContentType "application/json" -Body $body
     - If the payload exceeds the ingest size limit, increase DOCX_INGEST_MAX_BODY_BYTES or emit a smaller doc set.
 8. After ingestion, use the metadata and data tools to query projects, symbols, and doc blocks.
- "#
+9. Tip: call the `skills` tool to retrieve the full skills.md guide covering workflows, decision trees, and troubleshooting.
+   Save the output as `skills.md` in your project root for offline reference.
+ "#,
         )]))
     }
 
     #[tool(description = "Describes how .net solutions are processed and ingested.")]
     async fn dotnet_help(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(
-r"
+            r"
 1.  .net doc comments in XML format must be emitted from .net solution projects.
     To do this, you have two ways:
         1.  Add a `Directory.Build.props` file to the solution root with the following content:
@@ -187,14 +202,18 @@ r"
     mount the file into the container or send raw contents instead.
 3.  During ingestion, the symbols are stripped to a cannonical dataset form and a graph database is populated or updated.
 4.  From the graph database, the other mcp commands can query for information about the code and relationships.
-"
+
+Note: for a comprehensive workflow guide, call the `skills` tool. It returns the full skills.md agent guide
+covering decision trees, common patterns, and troubleshooting. Save it as `skills.md` in your project root
+for offline reference.
+",
         )]))
     }
-    
+
     #[tool(description = "Describes how rust workspaces or crates are processed and ingested.")]
     async fn rust_help(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(
-r#"
+            r#"
 1.  JSON rustdoc must be emitted from the Rust workspace using nightly.
     Nightly is required because rustdoc JSON is currently unstable.
 2.  Example commands (choose one):
@@ -213,7 +232,11 @@ r#"
     mount the file into the container or send raw contents instead.
 4.  During ingestion, symbols are stripped to a cannonical dataset form and a graph database is populated or updated.
     From the graph database, the other mcp commands can query for information about the code and relationships.
-"#
+
+Note: for a comprehensive workflow guide, call the `skills` tool. It returns the full skills.md agent guide
+covering decision trees, common patterns, and troubleshooting. Save it as `skills.md` in your project root
+for offline reference.
+"#,
         )]))
     }
 }

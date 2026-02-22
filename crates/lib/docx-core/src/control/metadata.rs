@@ -75,7 +75,9 @@ impl<C: Connection> DocxControlPlane<C> {
 
         merge_aliases(&mut project.aliases, &aliases);
 
-        if project.name.is_none() && let Some(first_alias) = project.aliases.first() {
+        if project.name.is_none()
+            && let Some(first_alias) = project.aliases.first()
+        {
             project.name = Some(first_alias.clone());
         }
 

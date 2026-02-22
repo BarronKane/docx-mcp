@@ -1,10 +1,8 @@
 use rmcp::{
     ErrorData,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content},
-    schemars,
-    tool,
-    tool_router,
+    model::{CallToolResult, Content, ErrorCode},
+    schemars, tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
@@ -58,6 +56,21 @@ pub struct GetDocSourceParams {
     pub doc_source_id: String,
 }
 
+/// Parameters for deleting a solution database.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DeleteSolutionParams {
+    pub solution: String,
+    pub confirm: bool,
+}
+
+/// Result payload for solution deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DeleteSolutionResult {
+    pub solution: String,
+    pub database: String,
+    pub removed_from_cache: bool,
+}
+
 #[tool_router(router = tool_router_metadata, vis = "pub")]
 impl<C: Connection> DocxMcp<C> {
     #[tool(description = "List all configured solution names.")]
@@ -74,7 +87,10 @@ impl<C: Connection> DocxMcp<C> {
     ) -> Result<CallToolResult, ErrorData> {
         let limit = params.limit.unwrap_or(200);
         let control = self.control_for_solution(&params.solution).await?;
-        let projects = control.list_projects(limit).await.map_err(helpers::map_err)?;
+        let projects = control
+            .list_projects(limit)
+            .await
+            .map_err(helpers::map_err)?;
         Ok(CallToolResult::success(vec![Content::json(projects)?]))
     }
 
@@ -149,5 +165,38 @@ impl<C: Connection> DocxMcp<C> {
             .await
             .map_err(helpers::map_err)?;
         Ok(CallToolResult::success(vec![Content::json(source)?]))
+    }
+
+    #[tool(
+        description = "Delete an entire solution database (destructive). Set confirm=true to proceed. This removes all ingested projects, symbols, docs, and relations for the solution."
+    )]
+    async fn delete_solution(
+        &self,
+        Parameters(params): Parameters<DeleteSolutionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !params.confirm {
+            return Err(helpers::mcp_err(
+                ErrorCode::INVALID_PARAMS,
+                "delete_solution is destructive; set confirm=true to continue",
+            ));
+        }
+        let db_name = params.solution.clone();
+        let handle = self
+            .registry
+            .get_or_init(&params.solution)
+            .await
+            .map_err(super::super::map_registry_err)?;
+        handle
+            .store()
+            .remove_database(&db_name)
+            .await
+            .map_err(helpers::map_err)?;
+        let removed_from_cache = self.registry.remove_solution(&params.solution).await;
+        let result = DeleteSolutionResult {
+            solution: params.solution,
+            database: db_name,
+            removed_from_cache,
+        };
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 }

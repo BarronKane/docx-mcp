@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use surrealdb::types::SurrealValue;
 
 /// Project metadata tracked by the ingestion pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct Project {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -24,7 +25,7 @@ pub struct Project {
 }
 
 /// Metadata describing an ingestion run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct Ingest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -46,7 +47,7 @@ pub struct Ingest {
 }
 
 /// Metadata describing the source document for an ingest.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -70,7 +71,7 @@ pub struct DocSource {
 }
 
 /// Canonical symbol record produced during ingestion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct Symbol {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -127,7 +128,7 @@ pub struct Symbol {
 }
 
 /// Type reference used in symbols and documentation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct TypeRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
@@ -144,7 +145,7 @@ pub struct TypeRef {
 }
 
 /// Function or method parameter metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,7 +157,7 @@ pub struct Param {
 }
 
 /// Generic type parameter metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct TypeParam {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -164,7 +165,7 @@ pub struct TypeParam {
 }
 
 /// Attribute metadata captured from source (when available).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct AttributeRef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,14 +175,14 @@ pub struct AttributeRef {
 }
 
 /// External identifier that maps a symbol back to source.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct SourceId {
     pub kind: String,
     pub value: String,
 }
 
 /// Documentation block associated with a symbol.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocBlock {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -237,7 +238,7 @@ pub struct DocBlock {
 }
 
 /// Parameter documentation entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocParam {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -247,7 +248,7 @@ pub struct DocParam {
 }
 
 /// Type parameter documentation entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocTypeParam {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,7 +256,7 @@ pub struct DocTypeParam {
 }
 
 /// Exception documentation entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocException {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_ref: Option<TypeRef>,
@@ -264,7 +265,7 @@ pub struct DocException {
 }
 
 /// Example documentation entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocExample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
@@ -275,7 +276,7 @@ pub struct DocExample {
 }
 
 /// Link or cross-reference documentation entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct SeeAlso {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -285,7 +286,7 @@ pub struct SeeAlso {
 }
 
 /// Documentation inheritance metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocInherit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cref: Option<String>,
@@ -294,14 +295,14 @@ pub struct DocInherit {
 }
 
 /// Additional documentation section not mapped to a known field.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct DocSection {
     pub title: String,
     pub body: String,
 }
 
 /// Chunked documentation text for embedding or search.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq)]
 pub struct DocChunk {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -323,7 +324,7 @@ pub struct DocChunk {
 }
 
 /// Generic relation record for edges between entities.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 pub struct RelationRecord {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,

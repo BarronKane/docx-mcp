@@ -1,24 +1,14 @@
 use std::{error::Error, fmt, str::FromStr, sync::Arc};
 
-use docx_store::models::{
-    DocBlock,
-    DocChunk,
-    DocSource,
-    Ingest,
-    Project,
-    RelationRecord,
-    Symbol,
-};
+use docx_store::models::{DocBlock, DocChunk, DocSource, Ingest, Project, RelationRecord, Symbol};
 use docx_store::schema::{
-    TABLE_DOC_BLOCK,
-    TABLE_DOC_SOURCE,
-    TABLE_INGEST,
-    TABLE_PROJECT,
+    SCHEMA_BOOTSTRAP_SURQL, TABLE_DOC_BLOCK, TABLE_DOC_SOURCE, TABLE_INGEST, TABLE_PROJECT,
     TABLE_SYMBOL,
-    make_record_id,
 };
+use serde::Serialize;
+use serde_json::Value;
+use surrealdb::types::{RecordId, RecordIdKey, Regex, SurrealValue, Table, ToSql};
 use surrealdb::{Connection, Surreal};
-use surrealdb::sql::{Id, Regex, Thing};
 use uuid::Uuid;
 
 /// Errors returned by the `SurrealDB` store implementation.
@@ -50,12 +40,14 @@ pub type StoreResult<T> = Result<T, StoreError>;
 /// Store implementation backed by `SurrealDB`.
 pub struct SurrealDocStore<C: Connection> {
     db: Arc<Surreal<C>>,
+    schema_ready: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl<C: Connection> Clone for SurrealDocStore<C> {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
+            schema_ready: self.schema_ready.clone(),
         }
     }
 }
@@ -65,12 +57,16 @@ impl<C: Connection> SurrealDocStore<C> {
     pub fn new(db: Surreal<C>) -> Self {
         Self {
             db: Arc::new(db),
+            schema_ready: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
     #[must_use]
-    pub const fn from_arc(db: Arc<Surreal<C>>) -> Self {
-        Self { db }
+    pub fn from_arc(db: Arc<Surreal<C>>) -> Self {
+        Self {
+            db,
+            schema_ready: Arc::new(tokio::sync::OnceCell::new()),
+        }
     }
 
     #[must_use]
@@ -78,23 +74,35 @@ impl<C: Connection> SurrealDocStore<C> {
         &self.db
     }
 
+    async fn ensure_schema(&self) -> StoreResult<()> {
+        self.schema_ready
+            .get_or_try_init(|| async {
+                self.db.query(SCHEMA_BOOTSTRAP_SURQL).await?.check()?;
+                Ok::<(), StoreError>(())
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Upserts a project record by id.
     ///
     /// # Errors
     /// Returns `StoreError` if validation fails or the database write fails.
     pub async fn upsert_project(&self, mut project: Project) -> StoreResult<Project> {
+        self.ensure_schema().await?;
         ensure_non_empty(&project.project_id, "project_id")?;
         let id = project
             .id
             .clone()
             .unwrap_or_else(|| project.project_id.clone());
         project.id = Some(id.clone());
-        let record = Thing::from((TABLE_PROJECT, id.as_str()));
+        let record = RecordId::new(TABLE_PROJECT, id.as_str());
         self.db
             .query("UPSERT $record CONTENT $data RETURN NONE;")
             .bind(("record", record))
             .bind(("data", project.clone()))
-            .await?;
+            .await?
+            .check()?;
         Ok(project)
     }
 
@@ -103,8 +111,15 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_project(&self, project_id: &str) -> StoreResult<Option<Project>> {
-        let record: Option<Project> = self.db.select((TABLE_PROJECT, project_id)).await?;
-        Ok(record)
+        self.ensure_schema().await?;
+        let record = RecordId::new(TABLE_PROJECT, project_id);
+        let mut response = self
+            .db
+            .query("SELECT *, record::id(id) AS id FROM $record;")
+            .bind(("record", record))
+            .await?;
+        let mut records: Vec<Project> = response.take(0)?;
+        Ok(records.pop())
     }
 
     /// Fetches an ingest record by id.
@@ -112,7 +127,8 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_ingest(&self, ingest_id: &str) -> StoreResult<Option<Ingest>> {
-        let record = Thing::from((TABLE_INGEST, ingest_id));
+        self.ensure_schema().await?;
+        let record = RecordId::new(TABLE_INGEST, ingest_id);
         let mut response = self
             .db
             .query("SELECT * FROM $record;")
@@ -127,8 +143,9 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the limit is invalid or the database query fails.
     pub async fn list_projects(&self, limit: usize) -> StoreResult<Vec<Project>> {
+        self.ensure_schema().await?;
         let limit = limit_to_i64(limit)?;
-        let query = "SELECT * FROM project LIMIT $limit;";
+        let query = "SELECT *, record::id(id) AS id FROM project LIMIT $limit;";
         let mut response = self.db.query(query).bind(("limit", limit)).await?;
         let records: Vec<Project> = response.take(0)?;
         Ok(records)
@@ -139,18 +156,17 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the limit or pattern is invalid or the database query fails.
     pub async fn search_projects(&self, pattern: &str, limit: usize) -> StoreResult<Vec<Project>> {
+        self.ensure_schema().await?;
         let Some(pattern) = normalize_pattern(pattern) else {
             return self.list_projects(limit).await;
         };
         let limit = limit_to_i64(limit)?;
         let regex = build_project_regex(&pattern)?;
-        let query = "SELECT * FROM project WHERE search_text != NONE AND string::matches(search_text, $pattern) LIMIT $limit;";
-        let mut response = self
-            .db
-            .query(query)
-            .bind(("pattern", regex))
-            .bind(("limit", limit))
-            .await?;
+        let query = format!(
+            "SELECT *, record::id(id) AS id FROM project WHERE search_text != NONE AND string::matches(search_text, {}) LIMIT $limit;",
+            regex.to_sql()
+        );
+        let mut response = self.db.query(query).bind(("limit", limit)).await?;
         let records: Vec<Project> = response.take(0)?;
         Ok(records)
     }
@@ -160,10 +176,10 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the limit is invalid or the database query fails.
     pub async fn list_ingests(&self, project_id: &str, limit: usize) -> StoreResult<Vec<Ingest>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let limit = limit_to_i64(limit)?;
-        let query =
-            "SELECT * FROM ingest WHERE project_id = $project_id ORDER BY ingested_at DESC LIMIT $limit;";
+        let query = "SELECT * FROM ingest WHERE project_id = $project_id ORDER BY ingested_at DESC LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
@@ -179,14 +195,19 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database write fails.
     pub async fn create_ingest(&self, mut ingest: Ingest) -> StoreResult<Ingest> {
-        let id = ingest.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.ensure_schema().await?;
+        let id = ingest
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         ingest.id = Some(id.clone());
-        let record = Thing::from((TABLE_INGEST, id.as_str()));
+        let record = RecordId::new(TABLE_INGEST, id.as_str());
         self.db
             .query("UPSERT $record CONTENT $data RETURN NONE;")
             .bind(("record", record))
             .bind(("data", ingest.clone()))
-            .await?;
+            .await?
+            .check()?;
         Ok(ingest)
     }
 
@@ -195,12 +216,17 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_source(&self, mut source: DocSource) -> StoreResult<DocSource> {
-        let id = source.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.ensure_schema().await?;
+        let id = source
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         source.id = Some(id.clone());
         self.db
             .query("CREATE doc_source CONTENT $data RETURN NONE;")
             .bind(("data", source.clone()))
-            .await?;
+            .await?
+            .check()?;
         Ok(source)
     }
 
@@ -209,18 +235,20 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if validation fails or the database write fails.
     pub async fn upsert_symbol(&self, mut symbol: Symbol) -> StoreResult<Symbol> {
+        self.ensure_schema().await?;
         ensure_non_empty(&symbol.symbol_key, "symbol_key")?;
         let id = symbol
             .id
             .clone()
             .unwrap_or_else(|| symbol.symbol_key.clone());
         symbol.id = Some(id.clone());
-        let record = Thing::from((TABLE_SYMBOL, id.as_str()));
+        let record = RecordId::new(TABLE_SYMBOL, id.as_str());
         self.db
             .query("UPSERT $record CONTENT $data RETURN NONE;")
             .bind(("record", record))
             .bind(("data", symbol.clone()))
-            .await?;
+            .await?
+            .check()?;
         Ok(symbol)
     }
 
@@ -229,28 +257,35 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_block(&self, mut block: DocBlock) -> StoreResult<DocBlock> {
-        let id = block.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.ensure_schema().await?;
+        let id = block
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         block.id = Some(id.clone());
         self.db
             .query("CREATE doc_block CONTENT $data RETURN NONE;")
             .bind(("data", block.clone()))
-            .await?;
+            .await?
+            .check()?;
         Ok(block)
     }
 
-    /// Creates document block records.
+    /// Creates document block records concurrently.
     ///
     /// # Errors
     /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_blocks(&self, blocks: Vec<DocBlock>) -> StoreResult<Vec<DocBlock>> {
+        self.ensure_schema().await?;
         if blocks.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stored = Vec::with_capacity(blocks.len());
-        for block in blocks {
-            stored.push(self.create_doc_block(block).await?);
-        }
-        Ok(stored)
+        let futs: Vec<_> = blocks
+            .into_iter()
+            .map(|block| self.create_doc_block(block))
+            .collect();
+        let results = futures::future::join_all(futs).await;
+        results.into_iter().collect()
     }
 
     /// Creates document chunk records.
@@ -258,17 +293,22 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database write fails.
     pub async fn create_doc_chunks(&self, chunks: Vec<DocChunk>) -> StoreResult<Vec<DocChunk>> {
+        self.ensure_schema().await?;
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
         let mut stored = Vec::with_capacity(chunks.len());
         for mut chunk in chunks {
-            let id = chunk.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+            let id = chunk
+                .id
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
             chunk.id = Some(id.clone());
             self.db
                 .query("CREATE doc_chunk CONTENT $data RETURN NONE;")
                 .bind(("data", chunk.clone()))
-                .await?;
+                .await?
+                .check()?;
             stored.push(chunk);
         }
         Ok(stored)
@@ -281,19 +321,25 @@ impl<C: Connection> SurrealDocStore<C> {
     pub async fn create_relation(
         &self,
         table: &str,
-        mut relation: RelationRecord,
+        relation: RelationRecord,
     ) -> StoreResult<RelationRecord> {
-        let id = relation.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-        relation.id = Some(id.clone());
-        let statement = format!("CREATE {table} CONTENT $data RETURN NONE;");
+        self.ensure_schema().await?;
+        ensure_identifier(table, "table")?;
+        let in_id = parse_record_id(&relation.in_id, "in_id")?;
+        let out_id = parse_record_id(&relation.out_id, "out_id")?;
+        let payload = RelationPayload::from(&relation);
+        let statement = format!("RELATE $in->{table}->$out CONTENT $data RETURN NONE;");
         self.db
             .query(statement)
-            .bind(("data", relation.clone()))
-            .await?;
+            .bind(("in", in_id))
+            .bind(("out", out_id))
+            .bind(("data", payload))
+            .await?
+            .check()?;
         Ok(relation)
     }
 
-    /// Creates relation records in the specified table.
+    /// Creates relation records in the specified table concurrently.
     ///
     /// # Errors
     /// Returns `StoreError` if the database write fails.
@@ -305,18 +351,24 @@ impl<C: Connection> SurrealDocStore<C> {
         if relations.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stored = Vec::with_capacity(relations.len());
-        for mut relation in relations {
-            let id = relation.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-            relation.id = Some(id.clone());
-            let statement = format!("CREATE {table} CONTENT $data RETURN NONE;");
-            self.db
-                .query(statement)
-                .bind(("data", relation.clone()))
-                .await?;
-            stored.push(relation);
-        }
-        Ok(stored)
+        let futs: Vec<_> = relations
+            .into_iter()
+            .map(|r| self.create_relation(table, r))
+            .collect();
+        let results = futures::future::join_all(futs).await;
+        results.into_iter().collect()
+    }
+
+    /// Removes a database in the current namespace.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the input is invalid or the query fails.
+    pub async fn remove_database(&self, db_name: &str) -> StoreResult<()> {
+        ensure_non_empty(db_name, "db_name")?;
+        let identifier = Table::from(db_name).to_sql();
+        let statement = format!("REMOVE DATABASE {identifier};");
+        self.db.query(statement).await?.check()?;
+        Ok(())
     }
 
     /// Fetches a symbol by key.
@@ -324,8 +376,15 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_symbol(&self, symbol_key: &str) -> StoreResult<Option<Symbol>> {
-        let record: Option<Symbol> = self.db.select((TABLE_SYMBOL, symbol_key)).await?;
-        Ok(record)
+        self.ensure_schema().await?;
+        let record = RecordId::new(TABLE_SYMBOL, symbol_key);
+        let mut response = self
+            .db
+            .query("SELECT *, record::id(id) AS id FROM $record;")
+            .bind(("record", record))
+            .await?;
+        let mut records: Vec<Symbol> = response.take(0)?;
+        Ok(records.pop())
     }
 
     /// Fetches a symbol by project id and key.
@@ -337,9 +396,10 @@ impl<C: Connection> SurrealDocStore<C> {
         project_id: &str,
         symbol_key: &str,
     ) -> StoreResult<Option<Symbol>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let symbol_key = symbol_key.to_string();
-        let query = "SELECT * FROM symbol WHERE project_id = $project_id AND symbol_key = $symbol_key LIMIT 1;";
+        let query = "SELECT *, record::id(id) AS id FROM symbol WHERE project_id = $project_id AND symbol_key = $symbol_key LIMIT 1;";
         let mut response = self
             .db
             .query(query)
@@ -360,10 +420,11 @@ impl<C: Connection> SurrealDocStore<C> {
         name: &str,
         limit: usize,
     ) -> StoreResult<Vec<Symbol>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let name = name.to_string();
         let limit = limit_to_i64(limit)?;
-        let query = "SELECT * FROM symbol WHERE project_id = $project_id AND name CONTAINS $name LIMIT $limit;";
+        let query = "SELECT *, record::id(id) AS id FROM symbol WHERE project_id = $project_id AND name CONTAINS $name LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
@@ -380,6 +441,7 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn list_symbol_kinds(&self, project_id: &str) -> StoreResult<Vec<String>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let query = "SELECT kind FROM symbol WHERE project_id = $project_id GROUP BY kind;";
         let mut response = self
@@ -408,6 +470,7 @@ impl<C: Connection> SurrealDocStore<C> {
         scope: &str,
         limit: usize,
     ) -> StoreResult<Vec<Symbol>> {
+        self.ensure_schema().await?;
         let Some(scope) = normalize_pattern(scope) else {
             return Ok(Vec::new());
         };
@@ -415,15 +478,17 @@ impl<C: Connection> SurrealDocStore<C> {
         let limit = limit_to_i64(limit)?;
         let mut response = if scope.contains('*') {
             let regex = build_scope_regex(&scope)?;
-            let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::matches(string::lowercase(qualified_name), $pattern) LIMIT $limit;";
+            let query = format!(
+                "SELECT *, record::id(id) AS id FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::matches(string::lowercase(qualified_name), {}) LIMIT $limit;",
+                regex.to_sql()
+            );
             self.db
                 .query(query)
                 .bind(("project_id", project_id))
-                .bind(("pattern", regex))
                 .bind(("limit", limit))
                 .await?
         } else {
-            let query = "SELECT * FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::starts_with(string::lowercase(qualified_name), $scope) LIMIT $limit;";
+            let query = "SELECT *, record::id(id) AS id FROM symbol WHERE project_id = $project_id AND qualified_name != NONE AND string::starts_with(string::lowercase(qualified_name), $scope) LIMIT $limit;";
             self.db
                 .query(query)
                 .bind(("project_id", project_id))
@@ -445,15 +510,16 @@ impl<C: Connection> SurrealDocStore<C> {
         symbol_key: &str,
         ingest_id: Option<&str>,
     ) -> StoreResult<Vec<DocBlock>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let symbol_key = symbol_key.to_string();
         let (query, binds) = ingest_id.map_or(
             (
-                "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key;",
+                "SELECT *, record::id(id) AS id FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key;",
                 None,
             ),
             |ingest_id| (
-                "SELECT * FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key AND ingest_id = $ingest_id;",
+                "SELECT *, record::id(id) AS id FROM doc_block WHERE project_id = $project_id AND symbol_key = $symbol_key AND ingest_id = $ingest_id;",
                 Some(ingest_id.to_string()),
             ),
         );
@@ -481,10 +547,20 @@ impl<C: Connection> SurrealDocStore<C> {
         text: &str,
         limit: usize,
     ) -> StoreResult<Vec<DocBlock>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let text = text.to_string();
         let limit = limit_to_i64(limit)?;
-        let query = "SELECT * FROM doc_block WHERE project_id = $project_id AND (summary CONTAINS $text OR remarks CONTAINS $text OR returns CONTAINS $text) LIMIT $limit;";
+        let query = "\
+            SELECT *, record::id(id) AS id FROM doc_block \
+            WHERE project_id = $project_id \
+              AND (string::contains(string::lowercase(summary ?? ''), string::lowercase($text)) \
+                OR string::contains(string::lowercase(remarks ?? ''), string::lowercase($text)) \
+                OR string::contains(string::lowercase(returns ?? ''), string::lowercase($text)) \
+                OR string::contains(string::lowercase(errors ?? ''), string::lowercase($text)) \
+                OR string::contains(string::lowercase(panics ?? ''), string::lowercase($text)) \
+                OR string::contains(string::lowercase(safety ?? ''), string::lowercase($text))) \
+            LIMIT $limit;";
         let mut response = self
             .db
             .query(query)
@@ -505,12 +581,14 @@ impl<C: Connection> SurrealDocStore<C> {
         project_id: &str,
         ingest_ids: &[String],
     ) -> StoreResult<Vec<DocSource>> {
+        self.ensure_schema().await?;
         if ingest_ids.is_empty() {
             return Ok(Vec::new());
         }
         let project_id = project_id.to_string();
         let ingest_ids = ingest_ids.to_vec();
-        let query = "SELECT * FROM doc_source WHERE project_id = $project_id AND ingest_id IN $ingest_ids;";
+        let query =
+            "SELECT * FROM doc_source WHERE project_id = $project_id AND ingest_id IN $ingest_ids;";
         let mut response = self
             .db
             .query(query)
@@ -526,7 +604,8 @@ impl<C: Connection> SurrealDocStore<C> {
     /// # Errors
     /// Returns `StoreError` if the database query fails.
     pub async fn get_doc_source(&self, doc_source_id: &str) -> StoreResult<Option<DocSource>> {
-        let record = Thing::from((TABLE_DOC_SOURCE, doc_source_id));
+        self.ensure_schema().await?;
+        let record = RecordId::new(TABLE_DOC_SOURCE, doc_source_id);
         let mut response = self
             .db
             .query("SELECT * FROM $record;")
@@ -546,6 +625,7 @@ impl<C: Connection> SurrealDocStore<C> {
         ingest_id: Option<&str>,
         limit: usize,
     ) -> StoreResult<Vec<DocSource>> {
+        self.ensure_schema().await?;
         let project_id = project_id.to_string();
         let limit = limit_to_i64(limit)?;
         let (query, binds) = ingest_id.map_or(
@@ -583,21 +663,22 @@ impl<C: Connection> SurrealDocStore<C> {
         symbol_id: &str,
         limit: usize,
     ) -> StoreResult<Vec<RelationRecord>> {
-        let project_id = project_id.to_string();
+        self.ensure_schema().await?;
+        ensure_identifier(table, "table")?;
         let limit = limit_to_i64(limit)?;
-        let record_id = make_record_id(TABLE_SYMBOL, symbol_id);
+        let record_id = RecordId::new(TABLE_SYMBOL, symbol_id);
         let query = format!(
-            "SELECT * FROM {table} WHERE project_id = $project_id AND out = $record_id LIMIT $limit;"
+            "SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $record->{table} WHERE project_id = $project_id LIMIT $limit;"
         );
         let mut response = self
             .db
             .query(query)
-            .bind(("project_id", project_id))
-            .bind(("record_id", record_id))
+            .bind(("project_id", project_id.to_string()))
+            .bind(("record", record_id))
             .bind(("limit", limit))
             .await?;
-        let records: Vec<RelationRecord> = response.take(0)?;
-        Ok(records)
+        let records: Vec<RelationRow> = response.take(0)?;
+        Ok(records.into_iter().map(RelationRecord::from).collect())
     }
 
     /// Lists relation records in a table where the symbol is the target (incoming).
@@ -611,21 +692,98 @@ impl<C: Connection> SurrealDocStore<C> {
         symbol_id: &str,
         limit: usize,
     ) -> StoreResult<Vec<RelationRecord>> {
-        let project_id = project_id.to_string();
+        self.ensure_schema().await?;
+        ensure_identifier(table, "table")?;
         let limit = limit_to_i64(limit)?;
-        let record_id = make_record_id(TABLE_SYMBOL, symbol_id);
+        let record_id = RecordId::new(TABLE_SYMBOL, symbol_id);
         let query = format!(
-            "SELECT * FROM {table} WHERE project_id = $project_id AND in = $record_id LIMIT $limit;"
+            "SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $record<-{table} WHERE project_id = $project_id LIMIT $limit;"
         );
         let mut response = self
             .db
             .query(query)
-            .bind(("project_id", project_id))
-            .bind(("record_id", record_id))
+            .bind(("project_id", project_id.to_string()))
+            .bind(("record", record_id))
             .bind(("limit", limit))
             .await?;
-        let records: Vec<RelationRecord> = response.take(0)?;
-        Ok(records)
+        let records: Vec<RelationRow> = response.take(0)?;
+        Ok(records.into_iter().map(RelationRecord::from).collect())
+    }
+
+    /// Fetches all adjacency relations for a symbol in a single multi-statement query.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the database query fails.
+    #[allow(clippy::too_many_lines)]
+    pub async fn fetch_symbol_adjacency(
+        &self,
+        symbol_id: &str,
+        project_id: &str,
+        limit: usize,
+    ) -> StoreResult<AdjacencyRaw> {
+        self.ensure_schema().await?;
+        let limit = limit_to_i64(limit)?;
+        let record = RecordId::new(TABLE_SYMBOL, symbol_id);
+        let query = r"
+            LET $sym = $record;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->member_of   WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-member_of   WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->contains    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-contains    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->returns     WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-returns     WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->param_type  WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-param_type  WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->see_also    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-see_also    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->inherits    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-inherits    WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->references  WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym<-references  WHERE project_id = $project_id LIMIT $limit;
+            SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM $sym->observed_in WHERE project_id = $project_id LIMIT $limit;
+        ";
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("record", record))
+            .bind(("project_id", project_id.to_string()))
+            .bind(("limit", limit))
+            .await?;
+
+        // Statement 0 is LET, statements 1..=15 are SELECTs
+        let member_of_out: Vec<RelationRow> = response.take(1)?;
+        let member_of_in: Vec<RelationRow> = response.take(2)?;
+        let contains_out: Vec<RelationRow> = response.take(3)?;
+        let contains_in: Vec<RelationRow> = response.take(4)?;
+        let returns_out: Vec<RelationRow> = response.take(5)?;
+        let returns_in: Vec<RelationRow> = response.take(6)?;
+        let param_types_out: Vec<RelationRow> = response.take(7)?;
+        let param_types_in: Vec<RelationRow> = response.take(8)?;
+        let see_also_out: Vec<RelationRow> = response.take(9)?;
+        let see_also_in: Vec<RelationRow> = response.take(10)?;
+        let inherits_out: Vec<RelationRow> = response.take(11)?;
+        let inherits_in: Vec<RelationRow> = response.take(12)?;
+        let references_out: Vec<RelationRow> = response.take(13)?;
+        let references_in: Vec<RelationRow> = response.take(14)?;
+        let observed_in_out: Vec<RelationRow> = response.take(15)?;
+
+        let to_records = |rows: Vec<RelationRow>| -> Vec<RelationRecord> {
+            rows.into_iter().map(RelationRecord::from).collect()
+        };
+
+        Ok(AdjacencyRaw {
+            member_of: merge_relation_rows(to_records(member_of_out), to_records(member_of_in)),
+            contains: merge_relation_rows(to_records(contains_out), to_records(contains_in)),
+            returns: merge_relation_rows(to_records(returns_out), to_records(returns_in)),
+            param_types: merge_relation_rows(
+                to_records(param_types_out),
+                to_records(param_types_in),
+            ),
+            see_also: merge_relation_rows(to_records(see_also_out), to_records(see_also_in)),
+            inherits: merge_relation_rows(to_records(inherits_out), to_records(inherits_in)),
+            references: merge_relation_rows(to_records(references_out), to_records(references_in)),
+            observed_in: to_records(observed_in_out),
+        })
     }
 
     /// Lists relation records for a document block id.
@@ -639,11 +797,13 @@ impl<C: Connection> SurrealDocStore<C> {
         doc_block_id: &str,
         limit: usize,
     ) -> StoreResult<Vec<RelationRecord>> {
+        self.ensure_schema().await?;
+        ensure_identifier(table, "table")?;
         let project_id = project_id.to_string();
         let limit = limit_to_i64(limit)?;
-        let record_id = make_record_id(TABLE_DOC_BLOCK, doc_block_id);
+        let record_id = RecordId::new(TABLE_DOC_BLOCK, doc_block_id);
         let query = format!(
-            "SELECT * FROM {table} WHERE project_id = $project_id AND in = $record_id LIMIT $limit;"
+            "SELECT id, in AS in_id, out AS out_id, project_id, ingest_id, kind, extra FROM {table} WHERE project_id = $project_id AND in = $record_id LIMIT $limit;"
         );
         let mut response = self
             .db
@@ -652,9 +812,39 @@ impl<C: Connection> SurrealDocStore<C> {
             .bind(("record_id", record_id))
             .bind(("limit", limit))
             .await?;
-        let records: Vec<RelationRecord> = response.take(0)?;
-        Ok(records)
+        let records: Vec<RelationRow> = response.take(0)?;
+        Ok(records.into_iter().map(RelationRecord::from).collect())
     }
+}
+
+/// Raw adjacency data returned from a single multi-statement query.
+#[derive(Debug, Default)]
+pub struct AdjacencyRaw {
+    pub member_of: Vec<RelationRecord>,
+    pub contains: Vec<RelationRecord>,
+    pub returns: Vec<RelationRecord>,
+    pub param_types: Vec<RelationRecord>,
+    pub see_also: Vec<RelationRecord>,
+    pub inherits: Vec<RelationRecord>,
+    pub references: Vec<RelationRecord>,
+    pub observed_in: Vec<RelationRecord>,
+}
+
+fn merge_relation_rows(
+    mut left: Vec<RelationRecord>,
+    right: Vec<RelationRecord>,
+) -> Vec<RelationRecord> {
+    let mut seen = std::collections::HashSet::new();
+    for r in &left {
+        seen.insert((r.in_id.clone(), r.out_id.clone(), r.kind.clone()));
+    }
+    for r in right {
+        let key = (r.in_id.clone(), r.out_id.clone(), r.kind.clone());
+        if seen.insert(key) {
+            left.push(r);
+        }
+    }
+    left
 }
 
 fn ensure_non_empty(value: &str, field: &str) -> StoreResult<()> {
@@ -664,9 +854,78 @@ fn ensure_non_empty(value: &str, field: &str) -> StoreResult<()> {
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
+fn ensure_identifier(value: &str, field: &str) -> StoreResult<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(StoreError::InvalidInput(format!(
+            "{field} must be a valid identifier"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_record_id(value: &str, field: &str) -> StoreResult<RecordId> {
+    ensure_non_empty(value, field)?;
+    RecordId::parse_simple(value).map_err(|err| {
+        StoreError::InvalidInput(format!(
+            "{field} must be a record id in 'table:key' format: {err}"
+        ))
+    })
+}
+
+#[derive(Debug, Clone, Serialize, SurrealValue)]
+struct RelationPayload {
+    project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ingest_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra: Option<Value>,
+}
+
+impl From<&RelationRecord> for RelationPayload {
+    fn from(value: &RelationRecord) -> Self {
+        Self {
+            project_id: value.project_id.clone(),
+            ingest_id: value.ingest_id.clone(),
+            kind: value.kind.clone(),
+            extra: value.extra.clone(),
+        }
+    }
+}
+
+#[derive(serde::Deserialize, SurrealValue)]
+struct RelationRow {
+    id: RecordId,
+    in_id: RecordId,
+    out_id: RecordId,
+    project_id: String,
+    ingest_id: Option<String>,
+    kind: Option<String>,
+    extra: Option<Value>,
+}
+
+impl From<RelationRow> for RelationRecord {
+    fn from(row: RelationRow) -> Self {
+        Self {
+            id: Some(record_id_to_string(row.id)),
+            in_id: record_id_to_record_ref(row.in_id),
+            out_id: record_id_to_record_ref(row.out_id),
+            project_id: row.project_id,
+            ingest_id: row.ingest_id,
+            kind: row.kind,
+            extra: row.extra,
+        }
+    }
+}
+
+#[derive(serde::Deserialize, SurrealValue)]
 struct IngestRow {
-    id: Thing,
+    id: RecordId,
     project_id: String,
     git_commit: Option<String>,
     git_branch: Option<String>,
@@ -680,7 +939,7 @@ struct IngestRow {
 impl From<IngestRow> for Ingest {
     fn from(row: IngestRow) -> Self {
         Self {
-            id: Some(thing_id_to_string(row.id)),
+            id: Some(record_id_to_string(row.id)),
             project_id: row.project_id,
             git_commit: row.git_commit,
             git_branch: row.git_branch,
@@ -693,9 +952,9 @@ impl From<IngestRow> for Ingest {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, SurrealValue)]
 struct DocSourceRow {
-    id: Thing,
+    id: RecordId,
     project_id: String,
     ingest_id: Option<String>,
     language: Option<String>,
@@ -710,7 +969,7 @@ struct DocSourceRow {
 impl From<DocSourceRow> for DocSource {
     fn from(row: DocSourceRow) -> Self {
         Self {
-            id: Some(thing_id_to_string(row.id)),
+            id: Some(record_id_to_string(row.id)),
             project_id: row.project_id,
             ingest_id: row.ingest_id,
             language: row.language,
@@ -724,7 +983,7 @@ impl From<DocSourceRow> for DocSource {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, SurrealValue)]
 struct SymbolKindRow {
     kind: Option<String>,
 }
@@ -739,32 +998,39 @@ fn normalize_pattern(pattern: &str) -> Option<String> {
 }
 
 fn limit_to_i64(limit: usize) -> StoreResult<i64> {
-    i64::try_from(limit).map_err(|_| {
-        StoreError::InvalidInput("limit exceeds supported range".to_string())
-    })
+    i64::try_from(limit)
+        .map_err(|_| StoreError::InvalidInput("limit exceeds supported range".to_string()))
 }
 
-fn thing_id_to_string(thing: Thing) -> String {
-    match thing.id {
-        Id::String(value) => value,
-        other => other.to_string(),
+fn record_id_to_string(record_id: RecordId) -> String {
+    record_id_key_to_string(record_id.key)
+}
+
+fn record_id_to_record_ref(record_id: RecordId) -> String {
+    let table = record_id.table.into_string();
+    let key = record_id_key_to_string(record_id.key);
+    format!("{table}:{key}")
+}
+
+fn record_id_key_to_string(key: RecordIdKey) -> String {
+    match key {
+        RecordIdKey::String(value) => value,
+        other => other.to_sql(),
     }
 }
 
 fn build_project_regex(pattern: &str) -> StoreResult<Regex> {
     let body = glob_to_regex_body(pattern);
     let regex = format!(r"(^|\|){body}(\||$)");
-    Regex::from_str(&regex).map_err(|err| {
-        StoreError::InvalidInput(format!("Invalid project search pattern: {err}"))
-    })
+    Regex::from_str(&regex)
+        .map_err(|err| StoreError::InvalidInput(format!("Invalid project search pattern: {err}")))
 }
 
 fn build_scope_regex(pattern: &str) -> StoreResult<Regex> {
     let body = glob_to_regex_body(pattern);
     let regex = format!(r"^{body}$");
-    Regex::from_str(&regex).map_err(|err| {
-        StoreError::InvalidInput(format!("Invalid scope search pattern: {err}"))
-    })
+    Regex::from_str(&regex)
+        .map_err(|err| StoreError::InvalidInput(format!("Invalid scope search pattern: {err}")))
 }
 
 fn glob_to_regex_body(pattern: &str) -> String {
@@ -785,9 +1051,11 @@ fn glob_to_regex_body(pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use docx_store::models::{DocSource, Ingest};
-    use surrealdb::engine::local::{Db, Mem};
+    use docx_store::models::{DocSource, Ingest, Project, RelationRecord, Symbol};
+    use docx_store::schema::REL_MEMBER_OF;
+    use serde::Deserialize;
     use surrealdb::Surreal;
+    use surrealdb::engine::local::{Db, Mem};
 
     async fn build_store() -> SurrealDocStore<Db> {
         let db = Surreal::new::<Mem>(())
@@ -855,5 +1123,108 @@ mod tests {
 
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].id.as_deref(), Some("source-1"));
+    }
+
+    fn build_symbol(project_id: &str, id: &str) -> Symbol {
+        Symbol {
+            id: Some(id.to_string()),
+            project_id: project_id.to_string(),
+            language: Some("rust".to_string()),
+            symbol_key: id.to_string(),
+            kind: None,
+            name: None,
+            qualified_name: None,
+            display_name: None,
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            is_static: None,
+            is_async: None,
+            is_const: None,
+            is_deprecated: None,
+            since: None,
+            stability: None,
+            source_path: None,
+            line: None,
+            col: None,
+            return_type: None,
+            params: Vec::new(),
+            type_params: Vec::new(),
+            attributes: Vec::new(),
+            source_ids: Vec::new(),
+            doc_summary: None,
+            extra: None,
+        }
+    }
+
+    #[derive(Deserialize, SurrealValue)]
+    struct RelationTypeFlags {
+        in_is_record: bool,
+        out_is_record: bool,
+    }
+
+    #[tokio::test]
+    async fn create_relation_stores_record_links() {
+        let store = build_store().await;
+        let _ = store
+            .upsert_symbol(build_symbol("project", "left"))
+            .await
+            .expect("failed to create left symbol");
+        let _ = store
+            .upsert_symbol(build_symbol("project", "right"))
+            .await
+            .expect("failed to create right symbol");
+
+        let relation = RelationRecord {
+            id: None,
+            in_id: "symbol:left".to_string(),
+            out_id: "symbol:right".to_string(),
+            project_id: "project".to_string(),
+            ingest_id: None,
+            kind: Some("test".to_string()),
+            extra: None,
+        };
+        let _ = store
+            .create_relation(REL_MEMBER_OF, relation)
+            .await
+            .expect("failed to create relation");
+
+        let mut response = store
+            .db()
+            .query(
+                "SELECT type::is_record(in) AS in_is_record, type::is_record(out) AS out_is_record FROM member_of LIMIT 1;",
+            )
+            .await
+            .expect("failed to query relation record types");
+        let rows: Vec<RelationTypeFlags> = response.take(0).expect("failed to decode relation row");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].in_is_record);
+        assert!(rows[0].out_is_record);
+    }
+
+    #[tokio::test]
+    async fn remove_database_makes_current_db_unavailable() {
+        let store = build_store().await;
+        let _ = store
+            .upsert_project(Project {
+                id: Some("project".to_string()),
+                project_id: "project".to_string(),
+                name: Some("project".to_string()),
+                language: Some("rust".to_string()),
+                root_path: None,
+                description: None,
+                aliases: Vec::new(),
+                search_text: Some("project".to_string()),
+                extra: None,
+            })
+            .await
+            .expect("failed to upsert project");
+
+        store
+            .remove_database("test")
+            .await
+            .expect("failed to remove database");
+        let result = store.list_projects(10).await;
+        assert!(result.is_err());
     }
 }

@@ -3,9 +3,7 @@ use rmcp::{
     ErrorData,
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, ErrorCode},
-    schemars,
-    tool,
-    tool_router,
+    schemars, tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
@@ -42,7 +40,9 @@ pub struct RustdocIngestParams {
 
 #[tool_router(router = tool_router_ingest, vis = "pub")]
 impl<C: Connection> DocxMcp<C> {
-    #[tool(description = "Ingest C# XML documentation into the solution store. Provide xml or xml_path.")]
+    #[tool(
+        description = "Ingest C# XML documentation into the solution store. Provide xml or xml_path."
+    )]
     async fn ingest_csharp_xml(
         &self,
         Parameters(params): Parameters<CsharpIngestParams>,
@@ -64,7 +64,9 @@ impl<C: Connection> DocxMcp<C> {
         Ok(CallToolResult::success(vec![Content::json(report)?]))
     }
 
-    #[tool(description = "Ingest rustdoc JSON documentation into the solution store. Provide json (raw rustdoc JSON text) or json_path.")]
+    #[tool(
+        description = "Ingest rustdoc JSON documentation into the solution store. Provide json (raw rustdoc JSON text) or json_path."
+    )]
     async fn ingest_rustdoc_json(
         &self,
         Parameters(params): Parameters<RustdocIngestParams>,

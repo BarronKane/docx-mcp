@@ -1,6 +1,7 @@
 # Canonical Docx Store Schema
 
-This schema is designed for one SurrealDB database per solution. Every record that represents
+This schema is designed for one SurrealDB database per solution and is implemented by
+`schema/M0001_INIT.surql`. Every record that represents
 ingested content carries a `project_id` so queries can filter by the project (C# project or
 Rust crate) inside the solution.
 

@@ -2,9 +2,7 @@ use rmcp::{
     ErrorData,
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content},
-    schemars,
-    tool,
-    tool_router,
+    schemars, tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
@@ -91,7 +89,7 @@ impl<C: Connection> DocxMcp<C> {
         &self,
         Parameters(params): Parameters<GetMembersParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let limit = params.limit.unwrap_or(200);
+        let limit = params.limit.unwrap_or(50);
         let control = self.control_for_solution(&params.solution).await?;
         let members = control
             .list_members_by_scope(&params.project_id, &params.scope, limit)

@@ -10,9 +10,9 @@ use surrealdb::{Connection, Surreal};
 use crate::parsers::{CsharpParseError, RustdocParseError};
 use crate::store::{StoreError, SurrealDocStore};
 
+pub mod data;
 pub mod ingest;
 pub mod metadata;
-pub mod data;
 
 pub use ingest::{CsharpIngestReport, CsharpIngestRequest};
 pub use ingest::{RustdocIngestReport, RustdocIngestRequest};
@@ -82,7 +82,7 @@ impl<C: Connection> DocxControlPlane<C> {
 
     /// Creates a control plane from a shared `SurrealDB` connection.
     #[must_use]
-    pub const fn from_arc(db: Arc<Surreal<C>>) -> Self {
+    pub fn from_arc(db: Arc<Surreal<C>>) -> Self {
         Self {
             store: SurrealDocStore::from_arc(db),
         }
