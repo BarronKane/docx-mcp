@@ -400,6 +400,23 @@ impl<C: Connection> SurrealDocStore<C> {
         results.into_iter().collect()
     }
 
+    /// Lists all database names in the current namespace.
+    ///
+    /// # Errors
+    /// Returns `StoreError` if the query fails.
+    pub async fn list_databases(&self) -> StoreResult<Vec<String>> {
+        let mut response = self.db.query("INFO FOR NS;").await?;
+        let info: Option<Value> = response.take(0)?;
+        let names = info
+            .and_then(|v| v.get("databases").cloned())
+            .and_then(|v| {
+                v.as_object()
+                    .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+            })
+            .unwrap_or_default();
+        Ok(names)
+    }
+
     /// Removes a database in the current namespace.
     ///
     /// # Errors

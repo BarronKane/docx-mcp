@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use docx_core::services::{
-    BuildHandleFn, RegistryError, SolutionHandle, SolutionRegistry, SolutionRegistryConfig,
+    BuildHandleFn, DiscoverSolutionsFn, RegistryError, SolutionHandle, SolutionRegistry,
+    SolutionRegistryConfig,
 };
+use docx_core::store::SurrealDocStore;
 use surrealdb::engine::any::{Any, connect};
 use surrealdb::opt::auth::Namespace;
 
@@ -50,9 +52,53 @@ pub fn build_registry(config: &DocxConfig) -> SolutionRegistry<Any> {
         })
     });
 
+    // Discovery function: creates a namespace-scoped connection (no specific
+    // database selected) so that INFO FOR NS returns all existing databases
+    // without auto-creating a spurious one as a side-effect.
+    let discover_config = config.clone();
+    let discover: DiscoverSolutionsFn = Arc::new(move || {
+        let config = discover_config.clone();
+        Box::pin(async move {
+            // In-memory mode: each solution is an isolated mem:// instance with
+            // no shared namespace to enumerate.
+            if config.db_in_memory {
+                return vec![];
+            }
+            let (Some(uri), Some(username), Some(password)) = (
+                config.db_uri.clone(),
+                config.db_username.clone(),
+                config.db_password.clone(),
+            ) else {
+                return vec![];
+            };
+            let Ok(db) = connect(uri).await else {
+                return vec![];
+            };
+            if db
+                .signin(Namespace {
+                    namespace: config.db_namespace.clone(),
+                    username,
+                    password,
+                })
+                .await
+                .is_err()
+            {
+                return vec![];
+            }
+            // Select only the namespace — no database — so INFO FOR NS works
+            // without defining a new database as a side-effect.
+            if db.use_ns(&config.db_namespace).await.is_err() {
+                return vec![];
+            }
+            let store = SurrealDocStore::from_arc(Arc::new(db));
+            store.list_databases().await.unwrap_or_default()
+        })
+    });
+
     let mut registry_config = SolutionRegistryConfig::new(build)
         .with_sweep_interval(config.sweep_interval)
-        .with_health_check_after(config.health_check_after);
+        .with_health_check_after(config.health_check_after)
+        .with_discover_solutions(discover);
     if let Some(ttl) = config.registry_ttl {
         registry_config = registry_config.with_ttl(ttl);
     }

@@ -15,7 +15,7 @@ use docx_core::control::{
     ControlError, CsharpIngestReport, CsharpIngestRequest, RustdocIngestReport,
     RustdocIngestRequest,
 };
-use docx_core::services::{RegistryError, SolutionRegistry};
+use docx_core::services::{RESERVED_SOLUTION, RegistryError, SolutionRegistry};
 use docx_core::store::StoreError;
 use serde::{Deserialize, Serialize};
 use surrealdb::Connection;
@@ -423,6 +423,11 @@ where
     let trimmed = solution.trim();
     if trimmed.is_empty() {
         return Err(ApiError::bad_request("solution is required"));
+    }
+    if trimmed == RESERVED_SOLUTION {
+        return Err(ApiError::bad_request(format!(
+            "'{RESERVED_SOLUTION}' is a reserved solution name"
+        )));
     }
     let handle = state
         .registry

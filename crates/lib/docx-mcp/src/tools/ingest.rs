@@ -1,4 +1,5 @@
 use docx_core::control::{CsharpIngestRequest, RustdocIngestRequest};
+use docx_core::services::RESERVED_SOLUTION;
 use rmcp::{
     ErrorData,
     handler::server::wrapper::Parameters,
@@ -47,6 +48,12 @@ impl<C: Connection> DocxMcp<C> {
         &self,
         Parameters(params): Parameters<CsharpIngestParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if params.solution == RESERVED_SOLUTION {
+            return Err(helpers::mcp_err(
+                ErrorCode::INVALID_PARAMS,
+                format!("'{RESERVED_SOLUTION}' is a reserved solution name"),
+            ));
+        }
         let control = self.control_for_solution(&params.solution).await?;
         let report = control
             .ingest_csharp_xml(CsharpIngestRequest {
@@ -71,6 +78,12 @@ impl<C: Connection> DocxMcp<C> {
         &self,
         Parameters(params): Parameters<RustdocIngestParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if params.solution == RESERVED_SOLUTION {
+            return Err(helpers::mcp_err(
+                ErrorCode::INVALID_PARAMS,
+                format!("'{RESERVED_SOLUTION}' is a reserved solution name"),
+            ));
+        }
         let json = normalize_payload(params.json);
         let json_path = normalize_payload(params.json_path);
         if json.is_none() && json_path.is_none() {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -15,11 +15,21 @@ use tokio::sync::RwLock;
 use crate::control::DocxControlPlane;
 use crate::store::SurrealDocStore;
 
+/// Solution name reserved for internal namespace-discovery connections.
+/// Ingestion into this name must be rejected to prevent polluting the DB.
+pub const RESERVED_SOLUTION: &str = "__discovery__";
+
 /// Future returned by the solution handle builder.
 pub type BuildHandleFuture<C> =
     Pin<Box<dyn Future<Output = Result<Arc<SolutionHandle<C>>, RegistryError>> + Send + 'static>>;
 /// Builder function that creates a solution handle for a solution name.
 pub type BuildHandleFn<C> = Arc<dyn Fn(String) -> BuildHandleFuture<C> + Send + Sync + 'static>;
+
+/// Future returned by the solution discovery function.
+pub type DiscoverSolutionsFuture = Pin<Box<dyn Future<Output = Vec<String>> + Send + 'static>>;
+/// Optional function that discovers existing solution names from the database
+/// without requiring a specific database to be selected.
+pub type DiscoverSolutionsFn = Arc<dyn Fn() -> DiscoverSolutionsFuture + Send + Sync + 'static>;
 
 /// Configuration for the solution registry cache and builder.
 #[derive(Clone)]
@@ -34,6 +44,9 @@ pub struct SolutionRegistryConfig<C: Connection> {
     pub build_handle: BuildHandleFn<C>,
     /// Idle threshold before running a health check on next access.
     pub health_check_after: Duration,
+    /// Optional function to discover existing solution names from the database
+    /// at the namespace level (no specific database required).
+    pub discover_solutions: Option<DiscoverSolutionsFn>,
 }
 
 impl<C: Connection> SolutionRegistryConfig<C> {
@@ -45,7 +58,14 @@ impl<C: Connection> SolutionRegistryConfig<C> {
             max_entries: None,
             build_handle,
             health_check_after: Duration::from_secs(60),
+            discover_solutions: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_discover_solutions(mut self, f: DiscoverSolutionsFn) -> Self {
+        self.discover_solutions = Some(f);
+        self
     }
 
     #[must_use]
@@ -141,6 +161,11 @@ impl<C: Connection> SolutionHandle<C> {
     #[must_use]
     pub fn control(&self) -> DocxControlPlane<C> {
         self.control.clone()
+    }
+
+    /// Lists all database names in the current namespace.
+    pub async fn list_databases(&self) -> Vec<String> {
+        self.store.list_databases().await.unwrap_or_default()
     }
 
     /// Runs a lightweight health check against the database connection.
@@ -265,10 +290,46 @@ impl<C: Connection> SolutionRegistry<C> {
         Ok(handle)
     }
 
-    /// Lists known solutions from the cache.
+    /// Lists known solutions by merging the in-memory cache with a live DB
+    /// discovery query (`INFO FOR NS`).
+    ///
+    /// When a `discover_solutions` function is configured it is called first;
+    /// otherwise any live cached handle is used for the namespace query.  If
+    /// neither is available the result falls back to the cache alone.
     pub async fn list_solutions(&self) -> Vec<String> {
-        let map = self.inner.entries.read().await;
-        map.keys().cloned().collect()
+        // Try the dedicated discovery function first (preferred path).
+        let db_names: Vec<String> = if let Some(discover) = &self.inner.config.discover_solutions {
+            (discover)().await
+        } else {
+            // Fallback: collect cached entries without holding the map lock, then
+            // find any live handle to run INFO FOR NS through.
+            let entries: Vec<Arc<SolutionEntry<C>>> = {
+                let map = self.inner.entries.read().await;
+                map.values().cloned().collect()
+            };
+            let mut live_handle: Option<Arc<SolutionHandle<C>>> = None;
+            for entry in &entries {
+                let guard = entry.handle.read().await;
+                if let Some(h) = guard.as_ref() {
+                    live_handle = Some(h.clone());
+                    break;
+                }
+            }
+            match live_handle {
+                Some(h) => h.list_databases().await,
+                None => vec![],
+            }
+        };
+
+        // Merge DB-discovered names with cached names.
+        let mut names: HashSet<String> = db_names.into_iter().collect();
+        {
+            let map = self.inner.entries.read().await;
+            names.extend(map.keys().cloned());
+        }
+        let mut result: Vec<String> = names.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Removes a cached solution handle entry.
